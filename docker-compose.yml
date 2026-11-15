@@ -1,0 +1,57 @@
+services:
+  waha:
+    # Pinned. "latest-2026.10.1" is the default (WEBJS) image at this version
+    # (same digest as "latest" when pinned). Upgrade deliberately; unplanned
+    # WAHA upgrades can break sending.
+    image: devlikeapro/waha:latest-2026.10.1
+    restart: unless-stopped
+    # Localhost only: dashboard/QR page and API must not be public.
+    # On a server, reach it through an SSH tunnel.
+    ports:
+      - "127.0.0.1:3000:3000"
+    # Explicit list (not env_file) so Google/SMTP secrets stay out of this container.
+    environment:
+      WAHA_API_KEY: ${WAHA_API_KEY:?set WAHA_API_KEY in .env}
+      WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:-admin}
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:?set WAHA_DASHBOARD_PASSWORD in .env}
+      WHATSAPP_SWAGGER_USERNAME: ${WAHA_DASHBOARD_USERNAME:-admin}
+      WHATSAPP_SWAGGER_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:?set WAHA_DASHBOARD_PASSWORD in .env}
+      # Bring sessions back after a container restart (no QR re-scan).
+      WAHA_WORKER_RESTART_SESSIONS: "True"
+      WHATSAPP_RESTART_ALL_SESSIONS: "True"
+    volumes:
+      - waha-sessions:/app/.sessions
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Overrides WAHA_URL from .env: use the compose network.
+      WAHA_URL: http://waha:3000
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - app-data:/app/data
+    depends_on:
+      - waha
+    # Health endpoint (not published). Healthy = last full sync < 10 min old and WAHA session WORKING.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:' + (process.env.HEALTH_PORT || 8080) + '/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  waha-sessions:
+  app-data:

@@ -1,0 +1,10 @@
+{
+  "closers": [
+    { "name": "Closer One", "email": "closer.one@example.com", "whatsapp": "+919000000001" },
+    { "name": "Closer Two", "email": "closer.two@example.com", "whatsapp": "+919000000002" }
+  ],
+  "clients": [
+    { "name": "Client A", "calendarId": "client.a@gmail.com", "whatsappGroupId": "120363000000000001@g.us" },
+    { "name": "Client B", "calendarId": "client.b@gmail.com", "whatsappGroupId": "120363000000000002@g.us" }
+  ]
+}
