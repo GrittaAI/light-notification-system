@@ -9,10 +9,11 @@ Dependency notes:
 - The Docker image installs npm 11.19.0 (node:22 ships npm 10, which ignores allowScripts) and fails the build if better-sqlite3 does not load.
 
 Domain rules:
-- There are ~5 client calendars (owned by free Gmail accounts) all shared read-only with one ops Gmail. We authenticate once as the ops Gmail via OAuth (calendar.readonly scope) and read every client calendar with that single refresh token.
-- config.json holds: closers [{name, email, whatsapp}] and clients [{name, calendarId, whatsappGroupId}]. Validate with zod. Reload it on every sync run so edits need no restart.
+- There are ~5 client calendars (owned by free Gmail accounts), each shared (See all event details) with one Google service account. The app authenticates as that service account with a JSON key (calendar.readonly scope) and reads each calendar by its calendarId.
+- The key comes from GOOGLE_SERVICE_ACCOUNT_KEY_FILE or GOOGLE_SERVICE_ACCOUNT_JSON (exactly one), is mounted read-only in Docker, and is never baked into the image or committed.
+- Configuration (closers [{name, email, whatsapp}], clients [{name, calendarId, whatsappGroupId}], reminder offsets, admin users) lives in SQLite, is managed in the admin UI, validated with zod on every write, and is read on every run so edits need no restart. config.json only seeds an empty database on first start (CONFIG_PATH) and is never read again.
 - A closer gets reminders for an event ONLY if their email is in the event's attendees list. Match emails case-insensitively.
-- Reminder offsets in minutes before start: 60, 30, 10, 5.
+- Reminder offsets in minutes before start: the defaults are 60, 30, 10, 5 and they are configurable in the admin UI.
 - Send one WhatsApp group message per event + offset, tagging ALL matching closers on that event.
 - Timezone: store everything in UTC, display times in Asia/Kolkata.
 - Rescheduled events must fire fresh reminders. Cancelled events must send nothing more.
@@ -25,7 +26,8 @@ SQLite schema (src/db.ts, created on startup; all times are ISO-8601 UTC text):
 - sent_reminders(event_id, calendar_id, start_utc, offset_min, sent_at, status); unique key (event_id, calendar_id, start_utc, offset_min).
   status is 'sent' (default) or 'missed'. A 'missed' row is written once when an offset is more than 3 minutes past due, the call hasn't started, nothing was recorded, and first_seen_utc < due; it is logged and alerted by email once. Both statuses go into sentKeys, so missed reminders are never retried.
   calendar_id is in the key because one invite can be on several client calendars with the same event_id, and each client group gets its own reminder.
-- kv(key, value, updated_at); holds last_successful_sync (set only when every calendar synced and config.json reloaded cleanly).
+- kv(key, value, updated_at); holds last_successful_sync (set only when every active calendar synced).
+- closers(id, name, email UNIQUE lowercased, whatsapp digits, active, created_at, updated_at); clients(id, name, calendar_id UNIQUE, whatsapp_group_id, active, created_at, updated_at); settings(key, value JSON, updated_at; reminder_offsets default [60,30,10,5]); admin_users(email, role, added_by, created_at; the superadmin comes from env and is not stored); admin_sessions(token_hash, email, created_at, expires_at); audit_log(id, at, actor, action, details JSON). Missed-reminder detection uses max(first_seen_utc, the offset's own added-at time); settings stores each offset with its addedAt. kv also holds config_seeded_at (the config.json import runs at most once).
   In reminders.ts, the "already sent" check and the insert must both include calendar_id, and the sentKeys passed to computeDueReminders must be built from event_id + calendar_id + start_utc + offset_min.
 
 ## How we work (lead session rules)

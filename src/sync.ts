@@ -1,8 +1,9 @@
 import type { calendar_v3 } from 'googleapis';
-import { type AppConfig, type Client, loadConfigOrLastGood } from './config.js';
+import type { Client } from './config.js';
 import { type DB, setKv } from './db.js';
-import { type Calendar, describeGoogleError } from './google.js';
+import { type Calendar, describeGoogleError, isNotShared } from './google.js';
 import { logger } from './logger.js';
+import { loadRuntimeConfig } from './store.js';
 
 const log = logger.child({ module: 'sync' });
 
@@ -43,12 +44,6 @@ export interface SyncResult {
   ok: boolean;
   startedAt: string;
   calendars: CalendarResult[];
-}
-
-function currentConfig(): { config: AppConfig; fresh: boolean } {
-  const { config, fresh, error } = loadConfigOrLastGood();
-  if (error) log.error('config reload failed; using last valid config', { err: error });
-  return { config, fresh };
 }
 
 async function listEvents(calendar: Calendar, calendarId: string, timeMin: string, timeMax: string) {
@@ -117,7 +112,9 @@ export function upsertEvent(db: DB, data: EventData, nowIso: string): void {
 }
 
 /** Fetches one client calendar and writes it to the DB in a single transaction. */
-async function syncCalendar(db: DB, calendar: Calendar, client: Client, now: Date): Promise<CalendarResult> {
+async function syncCalendar(
+  db: DB, calendar: Calendar, client: Client, now: Date, serviceAccountEmail?: string,
+): Promise<CalendarResult> {
   const result: CalendarResult = {
     client: client.name, ok: false, upserted: 0, cancelled: 0, removed: 0, skippedAllDay: 0,
   };
@@ -128,7 +125,16 @@ async function syncCalendar(db: DB, calendar: Calendar, client: Client, now: Dat
   try {
     items = await listEvents(calendar, client.calendarId, timeMin, timeMax);
   } catch (err) {
-    result.error = describeGoogleError(err);
+    if (isNotShared(err)) {
+      const e = err as { response?: { status?: number }; status?: number };
+      result.error = {
+        message: `Calendar ${client.name} is not shared with the service account ${serviceAccountEmail ?? 'unknown'} (See all event details)`,
+        status: e.response?.status ?? e.status,
+        reason: 'not_shared',
+      };
+    } else {
+      result.error = describeGoogleError(err);
+    }
     log.error('calendar fetch failed', { client: client.name, calendarId: client.calendarId, ...result.error });
     return result;
   }
@@ -185,15 +191,17 @@ async function syncCalendar(db: DB, calendar: Calendar, client: Client, now: Dat
 }
 
 /** One sync pass over every client calendar. Never throws for a single calendar's failure. */
-export async function runSync(db: DB, calendar: Calendar): Promise<SyncResult> {
+export async function runSync(
+  db: DB, calendar: Calendar, opts: { serviceAccountEmail?: string } = {},
+): Promise<SyncResult> {
   const now = new Date();
   const startedAt = now.toISOString();
-  const { config, fresh } = currentConfig();
+  const config = loadRuntimeConfig(db);
 
   const calendars: CalendarResult[] = [];
   for (const client of config.clients) {
     try {
-      calendars.push(await syncCalendar(db, calendar, client, now));
+      calendars.push(await syncCalendar(db, calendar, client, now, opts.serviceAccountEmail));
     } catch (err) {
       // e.g. a DB error — still continue with the other calendars.
       log.error('calendar sync failed', { client: client.name, err });
@@ -202,12 +210,11 @@ export async function runSync(db: DB, calendar: Calendar): Promise<SyncResult> {
     }
   }
 
-  const ok = fresh && calendars.every((c) => c.ok);
+  const ok = calendars.every((c) => c.ok);
   if (ok) setKv(db, KV_LAST_SUCCESSFUL_SYNC, startedAt);
 
   log.info('sync finished', {
     ok,
-    configFresh: fresh,
     durationMs: Date.now() - now.getTime(),
     calendars: calendars.map(({ error, ...c }) => (error ? { ...c, error: error.message } : c)),
   });

@@ -7,6 +7,7 @@ import type { Alerts } from '../src/alerts.js';
 import { type DB, openDb } from '../src/db.js';
 import type { FetchEvent } from '../src/google.js';
 import { computeMissedReminders, type ReminderDeps, runReminders } from '../src/reminders.js';
+import { seedFromConfigFile } from '../src/store.js';
 import type { EventRow } from '../src/sync.js';
 import type { WhatsApp } from '../src/whatsapp.js';
 
@@ -36,6 +37,7 @@ beforeAll(() => {
 let db: DB;
 beforeEach(() => {
   db = openDb(':memory:');
+  seedFromConfigFile(db, process.env.CONFIG_PATH!);
 });
 
 function insertEventRow(overrides: Partial<EventRow> = {}): EventRow {

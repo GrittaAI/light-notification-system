@@ -1,9 +1,10 @@
 services:
   waha:
-    # Pinned. "latest-2026.10.1" is the default (WEBJS) image at this version
-    # (same digest as "latest" when pinned). Upgrade deliberately; unplanned
-    # WAHA upgrades can break sending.
-    image: devlikeapro/waha:latest-2026.10.1
+    # Pinned. GOWS engine (no embedded browser). The default is the amd64 image.
+    # On ARM (Apple Silicon Mac, ARM servers) set
+    # WAHA_IMAGE=devlikeapro/waha:gows-arm-2026.10.1 in .env. Upgrade both tags
+    # together and deliberately; unplanned WAHA upgrades can break sending.
+    image: ${WAHA_IMAGE:-devlikeapro/waha:gows-2026.10.1}
     restart: unless-stopped
     # Localhost only: dashboard/QR page and API must not be public.
     # On a server, reach it through an SSH tunnel.
@@ -16,6 +17,8 @@ services:
       WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:?set WAHA_DASHBOARD_PASSWORD in .env}
       WHATSAPP_SWAGGER_USERNAME: ${WAHA_DASHBOARD_USERNAME:-admin}
       WHATSAPP_SWAGGER_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:?set WAHA_DASHBOARD_PASSWORD in .env}
+      # The WAHA docs say the global default engine is WEBJS unless this is set.
+      WHATSAPP_DEFAULT_ENGINE: GOWS
       # Bring sessions back after a container restart (no QR re-scan).
       WAHA_WORKER_RESTART_SESSIONS: "True"
       WHATSAPP_RESTART_ALL_SESSIONS: "True"
@@ -34,8 +37,16 @@ services:
     environment:
       # Overrides WAHA_URL from .env: use the compose network.
       WAHA_URL: http://waha:3000
+      # Overrides GOOGLE_SERVICE_ACCOUNT_KEY_FILE from .env: the key mounted below.
+      GOOGLE_SERVICE_ACCOUNT_KEY_FILE: /run/secrets/google-service-account.json
+      # Admin UI: listens on all interfaces inside the container; published on host localhost only below.
+      ADMIN_PORT: "8081"
+      ADMIN_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:${ADMIN_PORT:-8081}:8081"
     volumes:
       - ./config.json:/app/config.json:ro
+      - ./secrets/google-service-account.json:/run/secrets/google-service-account.json:ro
       - app-data:/app/data
     depends_on:
       - waha

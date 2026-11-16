@@ -4,76 +4,89 @@
 
 This service reads your clients' Google Calendars, works out which closers (sales staff) are invited to each upcoming call, and posts reminders into the client's WhatsApp group, @mentioning those closers.
 
-- Reminders go out 60, 30, 10 and 5 minutes before the call starts. One message per call and reminder time, tagging every closer invited to that call.
+- By default reminders go out 60, 30, 10 and 5 minutes before the call starts (configurable in the admin UI). One message per call and reminder time, tagging every closer invited to that call.
 - A closer is tagged only if their email is on the event's guest list (matched ignoring upper/lower case).
 - Rescheduled calls get fresh reminders; cancelled calls get nothing more. Times are shown in IST (Asia/Kolkata).
-- If something breaks (calendar sync stale, Google login expired, WhatsApp disconnected) it sends an email alert, and a "RECOVERED" email when it is fixed. Missed reminders are reported once by email.
+- If something breaks (calendar sync stale, Google key problem, WhatsApp disconnected) it sends an email alert, and a "RECOVERED" email when it is fixed. Missed reminders are reported once by email.
 
-It runs as two Docker containers: the app, and WAHA (a WhatsApp HTTP API) that holds the WhatsApp login.
+It runs as two Docker containers: the app, and WAHA (a WhatsApp HTTP API) that holds the WhatsApp login. Closers, clients and reminder times are managed in a web admin UI (section 5).
 
 ## 2. Prerequisites
 
 - A Linux server with Docker and the Docker Compose plugin (`docker compose version` must work).
-- CPU type. `docker-compose.yml` pins `devlikeapro/waha:latest-2026.10.1`, which is for amd64 (Intel/AMD). On an ARM server (e.g. AWS Graviton, Raspberry Pi), edit `docker-compose.yml` and change that image to `devlikeapro/waha:arm-2026.10.1`.
-- A laptop with Node.js 22 for the one-time Google login step (it needs a web browser).
+- CPU type. By default `docker-compose.yml` uses `devlikeapro/waha:gows-2026.10.1` (GOWS engine, no browser), which is for amd64 (Intel/AMD). On an ARM machine (Apple Silicon Mac, AWS Graviton, Raspberry Pi), add `WAHA_IMAGE=devlikeapro/waha:gows-arm-2026.10.1` to `.env`. Do not edit `docker-compose.yml`.
 - An "ops" WhatsApp account on a phone, which must be a member of every client WhatsApp group. Reminders are posted as this account.
 - An SMTP account for alert emails. For Gmail use `smtp.gmail.com`, port `587`, and an App Password (not the normal password). App Passwords require 2-step verification to be turned on for that Google account.
 
 ## 3. Google setup
 
-Do the Google Cloud steps once.
+The app reads the calendars as a Google **service account** (a robot account with a JSON key). Do the Google Cloud steps once.
 
-1. In Google Cloud Console create a project and enable the **Google Calendar API**.
-2. Configure the OAuth consent screen, then set its publishing status to **In production**.
-
-   > **Important:** While the consent screen is in "Testing", Google expires the refresh token after about 7 days and syncing stops with an `invalid_grant` error.
-   > (An unverified app in production shows a "Google hasn't verified this app" warning during login. That is fine for this internal use: click *Advanced > Go to app*.)
-3. Create an OAuth client of type **Desktop app**. Note its client ID and secret.
-4. Share each client calendar with the ops Gmail (at least "See all event details"). Each calendar's `calendarId` in `config.json` is usually the owner's Gmail address.
-5. On your laptop (not the server), in a copy of this project:
+1. In Google Cloud Console create a project and enable the **Google Calendar API** in it.
+2. Go to *IAM & Admin > Service Accounts* and create a service account (no roles are needed). Note its email address; it looks like `name@project-id.iam.gserviceaccount.com` and is the `client_email` in the key file.
+3. Open the service account > *Keys* > *Add key* > *Create new key* > **JSON**. A `.json` file downloads.
+4. On the server, in the project folder, save that file as `secrets/google-service-account.json`:
 
    ```bash
-   npm install
-   cp .env.example .env     # fill in GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET
-   npm run auth
+   mkdir -p secrets
+   # copy the downloaded key to secrets/google-service-account.json, then, on the server (Docker):
+   sudo chown 1000:1000 secrets/google-service-account.json && sudo chmod 400 secrets/google-service-account.json
    ```
 
-   Open the printed URL, sign in as the **ops Gmail**, and approve. The terminal prints a `GOOGLE_REFRESH_TOKEN=...` line. Copy that line into the `.env` file on the server.
+   Create the file **before** running `docker compose up`: if it does not exist, Docker creates a directory named `secrets/google-service-account.json` in its place and the app cannot read it. The file is mounted read-only into the app container, is excluded from git and from the Docker image, and must never be shared.
+5. Each client shares their calendar with the service account's `client_email`, with permission **See all event details**. Send them these steps:
+   1. Open Google Calendar on a computer (calendar.google.com).
+   2. In the left list under *My calendars*, hover over the calendar, click the three dots > *Settings and sharing*.
+   3. Scroll to *Share with specific people or groups* and click *Add people and groups*.
+   4. Enter the service account's email address, set the permission to **See all event details**, and click *Send*.
+
+   Each calendar's `calendarId` (set when adding the client in the admin UI) is usually the owner's Gmail address. The admin dashboard shows the service account email with a copy button.
 
 ## 4. Configure
 
-On the server, get the project files, then create both files below **before** running `docker compose up`.
+On the server, get the project files, then create the files below **before** running `docker compose up`.
 
 ```bash
 cp .env.example .env
-cp config.example.json config.json
+cp config.example.json config.json   # optional: only seeds the first start (see below)
 ```
 
-Create `config.json` first: if the file does not exist when you start Docker Compose, Docker creates a directory named `config.json` in its place and the app cannot read it.
+Create `config.json` first, even as an empty-ish example: if the file does not exist when you start Docker Compose, Docker creates a directory named `config.json` in its place (harmless now: the app logs that there is nothing to import and starts empty, but remove it with `sudo rmdir config.json` if you want a clean tree). The same applies to `secrets/google-service-account.json` (section 3), which is required.
 
 ### .env
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `GOOGLE_CLIENT_ID` | yes | OAuth client ID (Desktop app) from Google Cloud |
-| `GOOGLE_CLIENT_SECRET` | yes | OAuth client secret |
-| `GOOGLE_REFRESH_TOKEN` | yes | Printed by `npm run auth` |
+| `GOOGLE_SERVICE_ACCOUNT_KEY_FILE` | one of two | Path to the service account JSON key (`secrets/google-service-account.json`). Docker Compose overrides it to the mounted path `/run/secrets/google-service-account.json` |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | one of two | The JSON key contents on one line, instead of a file. Set exactly one of the two variables; both or neither stops the app at start. Not usable with Docker Compose: compose always sets `GOOGLE_SERVICE_ACCOUNT_KEY_FILE`, so setting this in `.env` too makes the app stop with "set only one". With Docker, use the key file |
 | `WAHA_URL` | yes | Leave as `http://waha:3000`. Compose overrides it for the app anyway; use `http://127.0.0.1:3000` only when running outside Docker |
 | `WAHA_SESSION` | yes | Keep it as `default`. The free WAHA version only supports a session named `default` |
 | `WAHA_API_KEY` | yes | A long random secret. Used by WAHA and by the app to talk to it |
 | `WAHA_DASHBOARD_USERNAME` | no | WAHA dashboard login (default `admin`) |
+| `WAHA_IMAGE` | no | WAHA Docker image. Default is the pinned amd64 GOWS image `devlikeapro/waha:gows-2026.10.1`. On ARM (Apple Silicon Mac, ARM server) set `devlikeapro/waha:gows-arm-2026.10.1` |
 | `WAHA_DASHBOARD_PASSWORD` | yes | WAHA dashboard password. Choose your own |
 | `ALERT_EMAIL_TO` | yes | Where alert emails are sent |
 | `SMTP_HOST`, `SMTP_PORT` | yes | Mail server, e.g. `smtp.gmail.com` and `587` |
 | `SMTP_USER`, `SMTP_PASS` | yes | Mail login. For Gmail, `SMTP_PASS` is the App Password |
 | `HEALTH_PORT` | no | Port of the internal health endpoint (default `8080`, not published outside Docker) |
 | `DB_PATH` | no | SQLite file path (default `data/app.db`; Docker keeps it on a volume) |
-| `CONFIG_PATH` | no | Path to config.json (default `config.json`). Do not change it when using Docker (the file is mounted at /app/config.json) |
+| `SUPERADMIN_EMAIL` | yes | Email of the superadmin of the admin UI (always allowed to sign in; manages other admins) |
+| `ADMIN_PASSWORD` | one of two | Password for the superadmin (at least 12 characters; generate with `openssl rand -base64 18`) |
+| `GOOGLE_OAUTH_CLIENT_ID` | one of two | Google Web OAuth client ID to enable "Sign in with Google" (see "Admin UI"). At least one of `ADMIN_PASSWORD` / `GOOGLE_OAUTH_CLIENT_ID` is required |
+| `ADMIN_PORT` | no | Admin UI port (default `8081`). Under Docker Compose it is the host port, published on `127.0.0.1` only |
+| `ADMIN_HOST` | no | Interface the admin server binds to (default `127.0.0.1`; compose sets `0.0.0.0` inside the container) |
+| `ADMIN_COOKIE_SECURE` | no | `true` when the UI is served over HTTPS: marks the session cookie `Secure` (default `false`) |
+| `ADMIN_TRUST_PROXY` | no | `true` behind a reverse proxy you control: the login rate limit uses the last `X-Forwarded-For` entry (the last hop: the address your proxy saw; earlier entries are client-controlled) (default `false`) |
+| `CONFIG_PATH` | no | First-start import only: path to config.json (default `config.json`). Do not change it when using Docker (the file is mounted at /app/config.json) |
 | `LOG_LEVEL` | no | Log verbosity (default `info`) |
 
 > **Warning:** Do not `export WAHA_API_KEY` (or put it in your shell profile). A value exported in the shell overrides `.env` for the `waha` container but not for the app. The two keys then differ and every send fails with 401. Keep the key only in `.env`.
 
-### config.json
+### Configuration lives in the database
+
+Closers, clients, the reminder times and admin users are stored in SQLite and edited in the admin UI (section 5). The jobs read them on every run, so changes apply without a restart, and every edit is validated before it is saved.
+
+`config.json` is now an **import-only seed**. On startup, if there are no closers and no clients yet and `config.json` exists and is valid, it is imported once (and logged). After that it is never read again; editing it has no effect. A missing or invalid file is logged and the app starts empty. The format is the same as before:
 
 ```json
 {
@@ -86,13 +99,10 @@ Create `config.json` first: if the file does not exist when you start Docker Com
 }
 ```
 
-- `closers`: `email` must be the address the closer is invited with. `whatsapp` is the international number with country code (a leading `+`, spaces and dashes are allowed), e.g. `+91 98765 43210`. A number without the country code will not tag the right person.
-- `clients`: one entry per client calendar. `calendarId` is the calendar owner's Gmail address; `whatsappGroupId` ends in `@g.us` (see section 6). At least one client is required.
-- Emails and calendar IDs must not be duplicated.
+- Closer `email` must be the address the closer is invited with. `whatsapp` is the international number with country code (a leading `+`, spaces and dashes are allowed), e.g. `+91 98765 43210`. A number without the country code will not tag the right person.
+- Client `calendarId` is the calendar owner's Gmail address; `whatsappGroupId` ends in `@g.us`. Emails and calendar IDs must not be duplicated.
 
-`config.json` is re-read on every sync (every 2 minutes), so edits apply without a restart. If an edit breaks the file, the error is logged and the last valid config keeps being used. If config.json is invalid when the app starts or restarts, the app does not start: check `docker compose logs app` for the error.
-
-## 5. Start and link WhatsApp
+## 5. Start, link WhatsApp and use the admin UI
 
 ```bash
 docker compose up -d --build
@@ -111,18 +121,49 @@ Leave that running, then on the laptop:
 3. When its status shows `SCAN_QR_CODE`, scan the QR code with the ops phone: WhatsApp > Linked devices > Link a device. The QR code refreshes every ~20 seconds; if it expires, the session fails and you restart it.
 4. Wait until the status is `WORKING`.
 
-The login is kept on a Docker volume, so restarts normally do not need a re-scan.
+The login is kept on a Docker volume, so restarts normally do not need a re-scan. Switching WAHA engines (for example from the old WEBJS image to GOWS) needs a new QR scan, because sessions are not shared between engines.
+
+### Admin UI
+
+After `docker compose up -d --build` the admin UI is at http://127.0.0.1:8081 (`ADMIN_PORT`; published on the server's localhost only, so use an SSH tunnel `ssh -L 8081:127.0.0.1:8081 user@server`, or put HTTPS in front, below).
+
+**First login.** Sign in with `SUPERADMIN_EMAIL` and `ADMIN_PASSWORD` (superadmin only), or with Google if configured. Then:
+
+1. *Clients*: add each client calendar (calendar ID, WhatsApp group chosen from the list, or typed as `...@g.us`). Use *Send test message* to check the group.
+2. *Closers*: add each closer (name, email as invited, WhatsApp number with country code).
+3. *Reminder settings*: change the offsets if you do not want 60/30/10/5 (whole minutes 1-1440, at most 10). An offset added later never raises "missed" alerts for calls already known.
+4. *Dashboard*: health, WAHA status, per-calendar sync status, the service account email to share calendars with, upcoming calls with matched closers and recent reminders.
+
+*Disable* keeps a closer or client (and history) but stops reminders; *Delete* removes it for good. Every change is recorded in the *Audit log*.
+
+**Adding admins.** The superadmin opens *Admins* and adds a Google account email. Admins sign in with Google, can manage closers, clients and settings, and cannot manage other admins. Removing an admin signs them out at once. The superadmin comes from `.env` and cannot be removed.
+
+**Google login setup (optional).**
+
+1. Google Cloud Console > *APIs & Services* > *OAuth consent screen*: choose **Internal** (Google Workspace only) or **External** (add the admins as test users while the app is in Testing).
+2. *Credentials* > *Create credentials* > *OAuth client ID* > **Web application**. Add *Authorised JavaScript origins*, e.g. `https://admin.example.com` and `http://localhost:8081`. No redirect URI is needed.
+3. Put the client ID in `.env` as `GOOGLE_OAUTH_CLIENT_ID`, then `docker compose up -d`. Google sign-in only works from an HTTPS origin (or localhost) that is in the authorised list.
+
+**HTTPS with Caddy.** Point a DNS name at the server and use this `Caddyfile`; Caddy gets the certificate automatically:
+
+```
+admin.example.com {
+    reverse_proxy 127.0.0.1:8081
+}
+```
+
+Set `ADMIN_COOKIE_SECURE=true` and `ADMIN_TRUST_PROXY=true` in `.env` (only because Caddy sets `X-Forwarded-For`), then `docker compose up -d`. With `ADMIN_COOKIE_SECURE=true` the app also sends `Strict-Transport-Security: max-age=31536000`. Keep port 8081 closed to the internet (compose already binds it to 127.0.0.1).
 
 ## 6. Finding group IDs
 
-With the tunnel from section 5 open, list the groups of the session (replace YOUR_WAHA_API_KEY with the value from .env):
+The admin UI lists your WhatsApp groups in the client form. To look them up by hand, with the tunnel from section 5 open, list the groups of the session (replace YOUR_WAHA_API_KEY with the value from .env):
 
 ```bash
 curl -s -H "X-Api-Key: YOUR_WAHA_API_KEY" \
   "http://127.0.0.1:3000/api/default/groups?exclude=participants"
 ```
 
-Find the group by its name; its `id` ends in `@g.us` (for example `120363000000000001@g.us`). Put it in `config.json` as `clients[].whatsappGroupId`. The ops WhatsApp account must be a member of the group. If `id` is shown as an object, use its `_serialized` value (it ends in `@g.us`).
+Find the group by its name; its `id` ends in `@g.us` (for example `120363000000000001@g.us`). Enter it as the client's WhatsApp group in the admin UI. The ops WhatsApp account must be a member of the group. If `id` is shown as an object, use its `_serialized` value (it ends in `@g.us`).
 
 ## 7. Verify
 
@@ -139,10 +180,10 @@ docker compose exec app node -e "fetch('http://127.0.0.1:8080/health').then(r=>r
 ## 8. End-to-end test before going live
 
 1. Create a WhatsApp group containing the ops account, and find its ID (section 6).
-2. Add a temporary client to `config.json` pointing at a test calendar and this test group. Make sure a closer in `closers` has your test email/number. The test calendar must be shared with the ops Gmail (section 3, step 4).
+2. In the admin UI add a temporary client pointing at a test calendar and this test group (use *Send test message*). Make sure a closer has your test email/number. The test calendar must be shared with the service account (section 3, step 5).
 3. In that calendar, create an event starting about 15 minutes from now with that closer as a guest.
 4. Expect the 10-minute and 5-minute reminders in the test group, tagging the closer. (The 60 and 30 minute ones are skipped silently because the event was created too late.)
-5. Remove the temporary client from `config.json`.
+5. Delete or disable the temporary client in the admin UI.
 
 Alert drill:
 
@@ -162,8 +203,8 @@ Alert emails, and what to do:
 
 | Email subject | Meaning | What to do |
 |---|---|---|
-| `ALERT: calendar sync is stale` | No fully successful sync for over 10 minutes; reminders may be missed. The email lists which calendars failed | Read `docker compose logs app`. Common causes: a calendar not shared with the ops Gmail, Google login expired, or a broken `config.json` |
-| `ALERT: Google authorization expired or revoked (invalid_grant)` | Google rejected the refresh token; nothing can sync | On the laptop run `npm run auth`, put the new `GOOGLE_REFRESH_TOKEN` in the server's `.env`, then `docker compose up -d app`. Check the consent screen is "In production" |
+| `ALERT: calendar sync is stale` | No fully successful sync for over 10 minutes; reminders may be missed. The email lists which calendars failed | Read `docker compose logs app`. Common causes: a calendar not shared with the service account, a revoked Google key, or a database error (see the app logs) |
+| `ALERT: Google authorization expired or revoked (invalid_grant)` | Google rejected the service account key (deleted, revoked, or the server clock is wrong); nothing can sync | Create a new JSON key for the service account, replace `secrets/google-service-account.json` (same owner and mode as in section 3), then `docker compose restart app`. Check the server clock (`timedatectl`) |
 | `ALERT: WhatsApp session not working (...)` | WAHA session not `WORKING` for 3+ minutes | `SCAN_QR_CODE`: open the dashboard through the tunnel and scan the QR code again. `UNREACHABLE`: `docker compose ps` and `docker compose logs waha` |
 | `N call reminder(s) missed` | One or more reminders could not be sent in time (more than 3 minutes late) and are not retried | Check what was wrong (usually WhatsApp or sync down); tell the closers manually if the call is still ahead. No RECOVERED email is sent for missed reminders |
 | `RECOVERED: ...` | The problem above has cleared | Nothing |
@@ -183,7 +224,7 @@ Run it from the project folder (so docker compose finds docker-compose.yml) and 
 
 Losing `waha-sessions` only means scanning the QR code again. Losing `app-data` loses the record of which reminders were already sent.
 
-Upgrading WAHA: change the pinned tag in `docker-compose.yml` (remember the ARM variant), then
+Upgrading WAHA: change the pinned default tag in `docker-compose.yml` (`gows-<version>`) and, if you use it, the `gows-arm-<version>` tag in `WAHA_IMAGE` in `.env`. Keep both at the same version. Then
 
 ```bash
 docker compose pull waha && docker compose up -d waha
@@ -197,15 +238,24 @@ Updating the app: pull the new files, then `docker compose up -d --build`.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `invalid_client` in logs or during `npm run auth` | Wrong `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, or the OAuth client is not type Desktop app | Re-copy the values from Google Cloud; recreate the client as Desktop app |
-| `invalid_grant` | Refresh token expired or revoked (typically consent screen left in "Testing", or the app access was removed) | Set consent screen to In production, rerun `npm run auth` on the laptop, update `.env`, `docker compose up -d app` |
-| 404 / "not found" for one calendar | Calendar not shared with the ops Gmail, or wrong `calendarId` | Share the calendar with the ops Gmail; check `calendarId` in `config.json` |
+| `Calendar X is not shared with the service account ... (See all event details)` | The calendar is not shared with the service account (404/403), or `calendarId` is wrong | Have the calendar owner share it with that email using *See all event details* (section 3, step 5); check the client's calendar ID in the admin UI |
+| `invalid_grant` | The service account key was deleted or revoked, or the server clock is wrong | Create a new JSON key, replace `secrets/google-service-account.json`, `docker compose restart app`; check the server clock |
+| `invalid_client` | The service account key is invalid or damaged | Download a fresh JSON key and replace the file |
+| `accessNotConfigured` (403), hint "enable the Google Calendar API" | The Calendar API is not enabled in the service account's project | Enable the Google Calendar API in that project (section 3, step 1); wait a minute |
+| App fails at start: `GOOGLE_SERVICE_ACCOUNT_KEY_FILE ... is a directory` | `docker compose up` was run before `secrets/google-service-account.json` existed, so Docker created a folder | `docker compose down`, `sudo rmdir secrets/google-service-account.json`, save the real key file there (section 3), `docker compose up -d` |
+| App fails at start about the Google key (not valid JSON, missing `client_email` / `private_key`, "set only one" / "set one of") | Wrong or damaged key file, or both/neither of the two key variables set | Re-download the JSON key; set exactly one of `GOOGLE_SERVICE_ACCOUNT_KEY_FILE` / `GOOGLE_SERVICE_ACCOUNT_JSON`; under Docker Compose, remove `GOOGLE_SERVICE_ACCOUNT_JSON` from `.env` |
+| `no matching manifest for linux/arm64/v8` | amd64 WAHA image on an ARM machine | Set `WAHA_IMAGE=devlikeapro/waha:gows-arm-2026.10.1` in `.env`, then `docker compose up -d waha` |
+| Session `FAILED` with `Waiting failed: 30000ms exceeded` in `docker compose logs waha` | WEBJS (browser) engine image in use | Use the GOWS image: unset `WAHA_IMAGE` on amd64, or set it to `devlikeapro/waha:gows-arm-2026.10.1` on ARM; `docker compose up -d waha`; delete the failed session and start a new `default` session, then scan the QR |
 | 401 from WAHA when sending | `WAHA_API_KEY` differs between the waha container and the app (often a key exported in the shell) | `unset WAHA_API_KEY` in the shell, make sure `.env` has the only copy, then `docker compose up -d --force-recreate` |
 | WAHA status `SCAN_QR_CODE` | WhatsApp was logged out or never linked | Open the dashboard through the tunnel and scan the QR code |
-| App fails at start, `config.json` is a directory or cannot be read | `docker compose up` was run before `config.json` existed, so Docker created a folder | `docker compose down`, `sudo rmdir config.json`, create the real file, `docker compose up -d` |
-| No reminder for a call | The closer's email is not on the event's guest list, or differs from `config.json` (alias, different address) | Add the closer as a guest using the exact email in `config.json`; check with `docker compose exec app node dist/sync-once.js` which attendees were seen |
+| Log says no config.json import / config.json is a directory | `config.json` is only a first-start seed; it was missing (Docker may have created a folder) or invalid | Harmless: add closers and clients in the admin UI. To clean up: `docker compose down`, `sudo rmdir config.json` |
+| App does not start: `invalid environment` mentioning `SUPERADMIN_EMAIL` / `ADMIN_PASSWORD` | Missing superadmin email, password shorter than 12 characters, or neither `ADMIN_PASSWORD` nor `GOOGLE_OAUTH_CLIENT_ID` set | Fix `.env` (section 4) |
+| Admin UI not reachable / Google button missing or fails | Port 8081 is bound to localhost only; the origin is not in the OAuth client's authorised JavaScript origins; or HTTPS is missing | Use an SSH tunnel or Caddy (section 5); add the exact origin in Google Cloud |
+| Google login says "not authorised" | The Google account is not the superadmin and not in *Admins* | The superadmin adds the email under *Admins* |
+| Login returns 429 | 5 failed password attempts from one address in 15 minutes | Wait 15 minutes. Behind Caddy make sure `ADMIN_TRUST_PROXY=true` so the real client address is used |
+| No reminder for a call | The closer's email is not on the event's guest list, or differs from the closer's email in the admin UI (alias, different address) | Add the closer as a guest using the exact email shown under *Closers*; check with `docker compose exec app node dist/sync-once.js` which attendees were seen |
 | Reminder sent but closer not tagged / wrong person | `whatsapp` number missing country code or wrong | Use the full international number, e.g. `+919876543210` |
-| Message not posted to a group | Wrong `whatsappGroupId`, or the ops account is not in the group | Re-check the ID (section 6) and group membership |
+| Message not posted to a group | Wrong WhatsApp group, or the ops account is not in the group | Use *Send test message* on the client; re-check the group (section 6) and membership |
 
 ## 11. Known limitations
 
@@ -219,15 +269,17 @@ Updating the app: pull the new files, then `docker compose up -d --build`.
 ```bash
 npm install
 cp .env.example .env
-cp config.example.json config.json
+cp config.example.json config.json   # optional first-start seed
+# put the service account key at secrets/google-service-account.json (section 3, steps 1-4);
+# for local runs keep it owned by your own user: chmod 600 secrets/google-service-account.json
+# (the chown 1000:1000 / chmod 400 step is for the Docker server only)
 ```
 
 | Command | What it does |
 |---|---|
 | `npm run dev` | Run the service with auto-reload |
 | `npm run build` / `npm start` | Compile to `dist/` and run |
-| `npm run auth` | One-time OAuth flow; prints a refresh token |
 | `npm run sync:once` | Sync once and print the upcoming events stored (times in IST) |
 | `npm test` | Run unit tests (vitest) |
 
-The service syncs at startup and then every 2 minutes. The Docker build uses better-sqlite3's bundled prebuilt binary and fails early if it does not load. In the container, use `node dist/sync-once.js` instead of `npm run sync:once` (the production image has no dev tools).
+Set `SUPERADMIN_EMAIL` and `ADMIN_PASSWORD` in `.env`; the admin UI is then at http://localhost:8081. The service syncs at startup and then every 2 minutes. The Docker build uses better-sqlite3's bundled prebuilt binary and fails early if it does not load. In the container, use `node dist/sync-once.js` instead of `npm run sync:once` (the production image has no dev tools).

@@ -85,7 +85,7 @@ function failedCalendars(result: SyncResult | undefined): string {
   if (failed.length === 0) {
     return (
       'No calendar failed in the last sync run (or no sync result yet). ' +
-      'config.json may have failed to reload; check the app logs.'
+      'The sync job may not be running; check the app logs.'
     );
   }
   return (
@@ -133,10 +133,10 @@ function checkGoogleAuth(deps: MonitorDeps): CheckResult | null {
     debounceMs: 0,
     alertSubject: 'ALERT: Google authorization expired or revoked (invalid_grant)',
     alertText:
-      `Google rejected the refresh token (invalid_grant). No calendar can sync until it is replaced.\n` +
+      `Google rejected the service account key (invalid_grant). No calendar can sync until it is replaced.\n` +
       `Affected calendars: ${bad.map((c) => c.client).join(', ')}\n\n` +
-      `Fix: run \`npm run auth\`, put the new GOOGLE_REFRESH_TOKEN in .env, and restart the app.\n` +
-      `Make sure the Google OAuth consent screen is set to "In production"; in "Testing" mode refresh tokens expire after 7 days.`,
+      `Fix: create a new JSON key for the service account in Google Cloud Console, replace the key file ` +
+      `(or GOOGLE_SERVICE_ACCOUNT_JSON), restart the app, and check the server clock.`,
     recoverSubject: 'RECOVERED: Google authorization working again',
     recoverText: 'Google calendar authorization is working again.',
   };

@@ -1,5 +1,6 @@
 import cron from 'node-cron';
-import { configPath, loadConfig, loadEnv } from './config.js';
+import { configPath, loadEnv } from './config.js';
+import { startAdminServer } from './admin/server.js';
 import { openDb } from './db.js';
 import { startHealthServer } from './health.js';
 import { createAlerts } from './alerts.js';
@@ -8,6 +9,7 @@ import { logger } from './logger.js';
 import { runReminders } from './reminders.js';
 import { runMonitor } from './monitor.js';
 import { logStartupSummary } from './startup.js';
+import { loadRuntimeConfig, seedFromConfigFile } from './store.js';
 import { type SyncResult, runSync } from './sync.js';
 import { createWhatsApp } from './whatsapp.js';
 
@@ -33,30 +35,36 @@ function guarded(name: string, job: () => Promise<unknown>) {
 
 async function main(): Promise<void> {
   const env = loadEnv();
-  // Fail fast on a broken config at startup; later reloads happen inside each job.
-  const config = loadConfig();
-  logger.info('config loaded', {
-    path: configPath(),
-    closers: config.closers.length,
-    clients: config.clients.length,
-  });
-
   const db = openDb(env.DB_PATH);
   logger.info('db ready', { path: env.DB_PATH });
 
+  // First start only: import config.json into the empty tables. Never read again afterwards.
+  seedFromConfigFile(db, configPath());
+  const runtime = loadRuntimeConfig(db);
+  logger.info('configuration loaded from database', {
+    closers: runtime.closers.length,
+    clients: runtime.clients.length,
+    offsets: runtime.offsets,
+  });
+
   const whatsapp = createWhatsApp(env);
-  // Up before the startup sync so Docker can probe during startup.
-  const healthServer = startHealthServer(db, whatsapp, env.HEALTH_PORT);
-
-  const calendar = createCalendarClient(env);
-  const alerts = createAlerts(env);
-  const fetchEvent = createEventFetcher(calendar);
-
+  const { calendar, clientEmail } = createCalendarClient(env);
   const startedAt = new Date();
   let lastSyncResult: SyncResult | undefined;
   const getLastSyncResult = () => lastSyncResult;
 
-  const sync = guarded('sync', async () => { lastSyncResult = await runSync(db, calendar); });
+  // Up before the startup sync so Docker can probe during startup.
+  const healthServer = startHealthServer(db, whatsapp, env.HEALTH_PORT);
+  const adminServer = startAdminServer(
+    { db, env, whatsapp, getLastSyncResult, serviceAccountEmail: clientEmail },
+    env.ADMIN_PORT,
+    env.ADMIN_HOST,
+  );
+
+  const alerts = createAlerts(env);
+  const fetchEvent = createEventFetcher(calendar);
+
+  const sync = guarded('sync', async () => { lastSyncResult = await runSync(db, calendar, { serviceAccountEmail: clientEmail }); });
   const reminders = guarded('reminders', () => runReminders(db, { whatsapp, fetchEvent, alerts }));
   const monitor = guarded('monitor', () => runMonitor({ db, whatsapp, alerts, getLastSyncResult, startedAt }));
 
@@ -80,10 +88,17 @@ async function main(): Promise<void> {
     logger.info('shutting down', { signal });
     await Promise.all(tasks.map((t) => t.stop()));
     await Promise.all([sync.idle(), reminders.idle(), monitor.idle()]);
-    await new Promise<void>((resolve) => {
-      healthServer.close(() => resolve());
-      healthServer.closeAllConnections();
-    });
+    await Promise.all(
+      [healthServer, adminServer].map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            // A server that never started listening has nothing to close.
+            if (!server.listening) return resolve();
+            server.close(() => resolve());
+            server.closeAllConnections();
+          }),
+      ),
+    );
     db.close();
     process.exit(0);
   };

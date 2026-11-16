@@ -41,6 +41,56 @@ CREATE TABLE IF NOT EXISTS kv (
   value      TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- Configuration managed in the admin UI (see src/store.ts).
+CREATE TABLE IF NOT EXISTS closers (
+  id         INTEGER PRIMARY KEY,
+  name       TEXT NOT NULL,
+  email      TEXT NOT NULL UNIQUE,       -- lowercased
+  whatsapp   TEXT NOT NULL,              -- digits only
+  active     INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS clients (
+  id                INTEGER PRIMARY KEY,
+  name              TEXT NOT NULL,
+  calendar_id       TEXT NOT NULL UNIQUE,
+  whatsapp_group_id TEXT NOT NULL,       -- ends in @g.us
+  active            INTEGER NOT NULL DEFAULT 1,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,              -- JSON
+  updated_at TEXT NOT NULL
+);
+
+-- The superadmin comes from the environment and is never stored here.
+CREATE TABLE IF NOT EXISTS admin_users (
+  email      TEXT PRIMARY KEY,           -- lowercased
+  role       TEXT NOT NULL CHECK (role IN ('admin')),
+  added_by   TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  token_hash TEXT PRIMARY KEY,           -- sha256 of the cookie token
+  email      TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id      INTEGER PRIMARY KEY,
+  at      TEXT NOT NULL,
+  actor   TEXT NOT NULL,
+  action  TEXT NOT NULL,
+  details TEXT NOT NULL                  -- JSON, never secrets
+);
 `;
 
 export function setKv(db: DB, key: string, value: string): void {

@@ -31,6 +31,7 @@ WORKDIR /app
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY public ./public
 
 RUN mkdir -p /app/data && chown node:node /app/data
 USER node
@@ -39,5 +40,6 @@ USER node
 VOLUME ["/app/data"]
 
 # Secrets come from the environment (docker run --env-file / compose env_file);
-# config.json is mounted at /app/config.json.
+# the Google service account key is mounted read-only by docker compose and is
+# never copied into the image. config.json (optional) is mounted at /app/config.json and only seeds an empty database.
 CMD ["node", "dist/index.js"]

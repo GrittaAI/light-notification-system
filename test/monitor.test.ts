@@ -120,8 +120,10 @@ describe('runMonitor', () => {
     freshSync(t.db, at(0));
     await runMonitor(t.deps(), at(0));
     expect(t.sent).toHaveLength(1);
-    expect(t.sent[0]!.text).toContain('npm run auth');
-    expect(t.sent[0]!.text).toContain('In production');
+    expect(t.sent[0]!.text).toContain('new JSON key');
+    expect(t.sent[0]!.text).toContain('GOOGLE_SERVICE_ACCOUNT_JSON');
+    expect(t.sent[0]!.text).toContain('server clock');
+    expect(t.sent[0]!.text).not.toContain('npm run auth');
   });
 
   it('sync_stale is quiet during the first 10 minutes, then alerts and lists failing calendars', async () => {

@@ -14,7 +14,8 @@ async function main(): Promise<void> {
   const env = loadEnv();
   const db = openDb(env.DB_PATH);
   try {
-    const result = await runSync(db, createCalendarClient(env));
+    const { calendar, clientEmail } = createCalendarClient(env);
+    const result = await runSync(db, calendar, { serviceAccountEmail: clientEmail });
 
     const rows = db
       .prepare(`SELECT * FROM events WHERE end_utc > ? ORDER BY start_utc, client_name`)

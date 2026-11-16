@@ -6,4 +6,5 @@ data
 *.db-shm
 .env
 config.json
+secrets/
 .git

@@ -1,8 +1,10 @@
 node_modules/
+.DS_Store
 dist/
 data/
 .env
 config.json
+secrets/
 *.db
 *.db-wal
 *.db-shm

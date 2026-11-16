@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { type DB, openDb } from '../src/db.js';
 import type { Calendar } from '../src/google.js';
 import { type ReminderDeps, runReminders } from '../src/reminders.js';
+import { seedFromConfigFile } from '../src/store.js';
 import { type EventRow, runSync, upsertEvent } from '../src/sync.js';
 
 // Drives the real sync (with a controllable clock) and the real reminder runner
@@ -78,6 +79,7 @@ const reminderRows = () =>
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   db = openDb(':memory:');
+  seedFromConfigFile(db, process.env.CONFIG_PATH!);
   sent = [];
   alerts = [];
 });

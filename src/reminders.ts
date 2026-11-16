@@ -1,17 +1,22 @@
 import type { Alerts } from './alerts.js';
-import { type Closer, loadConfigOrLastGood } from './config.js';
+import type { Closer } from './config.js';
 import type { DB } from './db.js';
 import { describeGoogleError, type FetchEvent } from './google.js';
 import { logger } from './logger.js';
+import { loadRuntimeConfig } from './store.js';
 import { type EventRow, eventDataFromGoogle, STATUS_REMOVED, upsertEvent } from './sync.js';
 import type { WhatsApp } from './whatsapp.js';
 
 const log = logger.child({ module: 'reminders' });
 
-export const OFFSETS_MIN = [60, 30, 10, 5] as const;
+/** Default offsets (minutes before start); the real ones come from the settings table. */
+export const OFFSETS_MIN: readonly number[] = [60, 30, 10, 5];
 export const GRACE_MS = 3 * 60_000;
 /** Look-ahead for candidate events: the largest offset plus a minute. */
-export const LOOKAHEAD_MS = 61 * 60_000;
+export function lookaheadMs(offsets: readonly number[]): number {
+  return (Math.max(...offsets) + 1) * 60_000;
+}
+export const LOOKAHEAD_MS = lookaheadMs(OFFSETS_MIN);
 /** Only these statuses get reminders ("cancelled" and "removed" never do). */
 export const ACTIVE_STATUSES = ['confirmed', 'tentative'] as const;
 
@@ -43,19 +48,21 @@ export function computeDueReminders(
   events: EventRow[],
   closers: Closer[],
   sentKeys: ReadonlySet<string>,
+  offsets: readonly number[] = OFFSETS_MIN,
 ): DueReminder[] {
   const nowMs = now.getTime();
+  const lookahead = lookaheadMs(offsets);
   const due: DueReminder[] = [];
 
   for (const event of events) {
     if (!(ACTIVE_STATUSES as readonly string[]).includes(event.status)) continue;
     const startMs = Date.parse(event.start_utc);
-    if (!(startMs > nowMs && startMs - nowMs <= LOOKAHEAD_MS)) continue;
+    if (!(startMs > nowMs && startMs - nowMs <= lookahead)) continue;
 
     const matched = matchClosers(event, closers);
     if (matched.length === 0) continue;
 
-    for (const offsetMin of OFFSETS_MIN) {
+    for (const offsetMin of offsets) {
       const dueMs = startMs - offsetMin * 60_000;
       if (nowMs < dueMs || nowMs - dueMs >= GRACE_MS) continue;
       const key = reminderKey(event.event_id, event.calendar_id, event.start_utc, offsetMin);
@@ -70,29 +77,37 @@ export function computeDueReminders(
  * Pure: reminders that were missed and should be recorded once as 'missed'.
  * Missed means: more than GRACE_MS past due, the call hasn't started, nothing recorded
  * for it yet, and we already knew about the event before it was due (first_seen_utc < due).
- * Calls booked after an offset was due are not "missed" for that offset.
+ * Calls booked after an offset was due are not "missed" for that offset, and neither are
+ * an offset that was added after the event was first seen is judged from its own added-at time
+ * (effective first seen = max(first_seen_utc, offsetAddedAt[offset]); null/absent means it always existed).
  */
 export function computeMissedReminders(
   now: Date,
   events: EventRow[],
   closers: Closer[],
   sentKeys: ReadonlySet<string>,
+  offsets: readonly number[] = OFFSETS_MIN,
+  offsetAddedAt: Readonly<Record<number, string | null>> = {},
 ): DueReminder[] {
   const nowMs = now.getTime();
+  const lookahead = lookaheadMs(offsets);
   const missed: DueReminder[] = [];
 
   for (const event of events) {
     if (!(ACTIVE_STATUSES as readonly string[]).includes(event.status)) continue;
     const startMs = Date.parse(event.start_utc);
-    if (!(startMs > nowMs && startMs - nowMs <= LOOKAHEAD_MS)) continue;
+    if (!(startMs > nowMs && startMs - nowMs <= lookahead)) continue;
 
     const matched = matchClosers(event, closers);
     if (matched.length === 0) continue;
-    const firstSeenMs = Date.parse(event.first_seen_utc);
+    const eventFirstSeenMs = Date.parse(event.first_seen_utc);
 
-    for (const offsetMin of OFFSETS_MIN) {
+    for (const offsetMin of offsets) {
       const dueMs = startMs - offsetMin * 60_000;
       if (!(nowMs - dueMs > GRACE_MS)) continue;
+      // An offset added later must not raise "missed" alerts for calls already known.
+      const addedAt = offsetAddedAt[offsetMin];
+      const firstSeenMs = addedAt ? Math.max(eventFirstSeenMs, Date.parse(addedAt)) : eventFirstSeenMs;
       if (!(firstSeenMs < dueMs)) continue;
       const key = reminderKey(event.event_id, event.calendar_id, event.start_utc, offsetMin);
       if (sentKeys.has(key)) continue;
@@ -193,15 +208,17 @@ function missedAlertText(missed: DueReminder[]): string {
 
 /** One reminder pass: record missed reminders, then send due ones and record successes. */
 export async function runReminders(db: DB, deps: ReminderDeps, now = new Date()): Promise<ReminderRunResult> {
-  const { config, error } = loadConfigOrLastGood();
-  if (error) log.error('config reload failed; using last valid config', { err: error });
+  const config = loadRuntimeConfig(db);
 
   const nowIso = now.toISOString();
-  const untilIso = new Date(now.getTime() + LOOKAHEAD_MS).toISOString();
+  const untilIso = new Date(now.getTime() + lookaheadMs(config.offsets)).toISOString();
 
-  const events = db
+  let events = db
     .prepare(`SELECT * FROM events WHERE status IN ('confirmed', 'tentative') AND start_utc > ? AND start_utc <= ?`)
     .all(nowIso, untilIso) as EventRow[];
+  // Only active clients' calendars: a disabled/deleted/re-pointed client gets no sends and no missed alerts.
+  const activeCalendars = new Set(config.clients.map((c) => c.calendarId));
+  events = events.filter((e) => activeCalendars.has(e.calendar_id));
 
   // Both 'sent' and 'missed' rows count: neither is ever retried.
   const sentRows = db
@@ -225,7 +242,7 @@ export async function runReminders(db: DB, deps: ReminderDeps, now = new Date())
 
   // 1. Missed reminders: record once, log, alert once.
   const newlyMissed: DueReminder[] = [];
-  for (const m of computeMissedReminders(now, events, config.closers, sentKeys)) {
+  for (const m of computeMissedReminders(now, events, config.closers, sentKeys, config.offsets, config.offsetAddedAt)) {
     const info = insertRow.run(m.event.event_id, m.event.calendar_id, m.event.start_utc, m.offsetMin, nowIso, 'missed');
     sentKeys.add(m.key);
     if (info.changes === 0) continue;
@@ -242,7 +259,7 @@ export async function runReminders(db: DB, deps: ReminderDeps, now = new Date())
   }
 
   // 2. Due reminders.
-  const due = computeDueReminders(now, events, config.closers, sentKeys);
+  const due = computeDueReminders(now, events, config.closers, sentKeys, config.offsets);
   result.due = due.length;
   if (due.length === 0 && newlyMissed.length === 0) return result;
 
@@ -253,7 +270,7 @@ export async function runReminders(db: DB, deps: ReminderDeps, now = new Date())
     const ctx = ctxOf(r);
     const groupId = groupByCalendar.get(r.event.calendar_id);
     if (!groupId) {
-      log.warn('no client in config for event calendar; not sending', { ...ctx, calendarId: r.event.calendar_id });
+      log.warn('no active client for event calendar; not sending', { ...ctx, calendarId: r.event.calendar_id });
       result.failed++;
       continue;
     }
