@@ -974,7 +974,7 @@ function renderCalendar(box) {
   const addForDay = () => newTaskSheet(S.cal.sel > todayKey ? { dueIso: new Date(dayKeyStart(S.cal.sel) + 9 * 3_600_000).toISOString() } : undefined);
   const undated = tasks.filter((t) => !t.deleted && !t.dueAt && t.status !== 'done').length;
   const dayTitle = S.cal.sel === todayKey ? `Today · ${fmtDayKey(S.cal.sel)}` : fmtDayKey(S.cal.sel);
-  box.append(
+  box.append(...[
     h('div', { class: 'cal' },
       h('div', { class: 'cal-head' },
         h('h2', { class: 'cal-title', 'aria-live': 'polite' }, m.label),
@@ -995,7 +995,8 @@ function renderCalendar(box) {
       dayTasks.length > 0 && canAddHere && h('div', { class: 'cal-add-row' }, h('button', { type: 'button', class: 'btn text', id: 'cal-add', onclick: addForDay }, icon('plus'), 'Add a task on this day'))),
     undated > 0 && h('p', { class: 'cal-note small muted' }, `${undated} open task${undated > 1 ? 's have' : ' has'} no date. `,
       h('button', { type: 'button', class: 'link-btn', onclick: () => { S.homeView = 'list'; store.set('nudge.view', 'list'); renderHome(); } }, 'See them in List view')),
-    h('div', { class: 'cal-end', 'aria-hidden': 'true' }));
+    h('div', { class: 'cal-end', 'aria-hidden': 'true' }),
+  ].filter(Boolean)); // native append would print a skipped `cond && el` as "false"
   const sel = route().name === 'task' ? route().id : null;
   if (sel) { const row = box.querySelector(`[data-id="${CSS.escape(sel)}"] .task`); if (row) row.classList.add('selected'); }
 }
