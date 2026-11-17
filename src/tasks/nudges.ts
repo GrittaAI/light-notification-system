@@ -164,6 +164,36 @@ export function computeDigests(
   return out;
 }
 
+// ---------- preview (test notifications) ----------
+
+export type PreviewMode = 'due' | 'upcoming';
+
+export type DigestPreview =
+  | { ok: true; mode: PreviewMode; target: DigestTarget; message: string; taskIds: string[] }
+  | { ok: false; reason: 'no_target'; detail: string }
+  | { ok: false; reason: 'no_tasks' };
+
+/**
+ * Pure: the WhatsApp message this person would get if a nudge went out at `now`, built with the real
+ * formatter and target rules. Uses the tasks nudgeable now (plus the merge-ahead window, as a real digest
+ * would); if none are, it previews their open dated tasks instead, so the format can still be checked.
+ * Ignores quiet hours and the repeat timer, and changes nothing.
+ */
+export function previewDigest(person: PersonRow, tasks: readonly TaskRow[], now: Date, settings: DigestSettings): DigestPreview {
+  const resolved = targetFor(person, settings);
+  if ('skip' in resolved) return { ok: false, reason: 'no_target', detail: resolved.skip };
+  const byDue = (a: TaskRow, b: TaskRow) => Date.parse(a.dueAt!) - Date.parse(b.dueAt!) || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
+  const ahead = new Date(now.getTime() + settings.mergeAheadMinutes * 60_000);
+  let mode: PreviewMode = 'due';
+  let listed = tasks.filter((t) => isNudgeable(t, ahead, settings.leadMinutes)).sort(byDue);
+  if (listed.length === 0) {
+    mode = 'upcoming';
+    listed = tasks.filter((t) => t.status !== 'done' && t.deletedAt === null && t.dueAt !== null).sort(byDue);
+  }
+  if (listed.length === 0) return { ok: false, reason: 'no_tasks' };
+  return { ok: true, mode, target: resolved.target, message: buildMessage(listed, now, resolved.who, settings.publicUrl), taskIds: listed.map((t) => t.id) };
+}
+
 // ---------- the job ----------
 
 export interface NudgeDeps {

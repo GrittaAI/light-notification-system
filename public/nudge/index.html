@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#c2410c" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#1c1410" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#fff8f6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1a110e" media="(prefers-color-scheme: dark)">
   <meta name="description" content="Nudge: your tasks, with a WhatsApp nudge when they are due.">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -20,8 +20,10 @@
 <body>
   <div id="app"><p class="boot">Loading Nudge…</p></div>
   <div id="sheet-root"></div>
-  <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
-  <div id="alerts" class="toasts" role="alert"></div>
+  <div class="toast-stack">
+    <div id="alerts" class="toasts" role="alert"></div>
+    <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+  </div>
   <noscript><p class="boot">Nudge needs JavaScript.</p></noscript>
   <script type="module" src="/app.js"></script>
 </body>

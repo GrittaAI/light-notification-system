@@ -10,7 +10,7 @@ import type { ApiResult } from '../http/common.js';
 import { createPerson, deactivatePerson, ensureSuperadminPerson, getPerson, listPeople, type PersonRow, updatePerson } from '../people.js';
 import { addAudit, listNudgeAudit, parseOrThrow, StoreError } from '../store.js';
 import { canEdit, canView, visibleOwners } from '../tasks/access.js';
-import { targetFor } from '../tasks/nudges.js';
+import { previewDigest, targetFor } from '../tasks/nudges.js';
 import { getTaskSettings, setTaskSettings } from '../tasks/settings.js';
 import { logger } from '../logger.js';
 import type { WhatsApp } from '../whatsapp.js';
@@ -28,6 +28,8 @@ export interface NudgeApiDeps {
   /** WAHA client for the groups list and test nudges. Without it those endpoints answer 503. */
   whatsapp?: Pick<WhatsApp, 'sendGroupMessage' | 'sendDirectMessage' | 'listGroups'>;
   appName?: string;
+  /** TASKS_PUBLIC_URL (no trailing slash), so previews carry the same links as real nudges. */
+  publicUrl?: string;
 }
 
 const ok = (body: unknown, status = 200): ApiResult => ({ status, body });
@@ -146,6 +148,63 @@ export function createNudgeApi(deps: NudgeApiDeps) {
     if (!p) return ok({ target: 'none', configured: false });
     const configured = p.notifyTarget === 'dm' ? !!p.whatsapp : p.notifyTarget === 'group' ? !!p.notifyGroupId : !!getTaskSettings(db).defaultGroupId;
     return ok({ target: p.notifyTarget, configured });
+  }
+
+  // ----- test notifications: preview / send a person's nudge now -----
+
+  /** The person whose nudge is previewed: yourself, or (admins) anyone except the superadmin's own row. */
+  function previewSubject(user: SessionUser, raw: unknown): PersonRow {
+    const id = raw === undefined || raw === null || raw === '' ? user.personId : parseIntId(String(raw));
+    if (id === null || id === undefined) throw new HttpError(409, 'Create your task list first');
+    const p = getPerson(db, id);
+    if (!p) throw new HttpError(404, 'not found');
+    if (id !== user.personId) {
+      if (!isAdmin(user)) throw new HttpError(403, 'you can only test your own nudges');
+      if (isSuperEmail(p.email) && user.role !== 'superadmin') throw new HttpError(403, 'only the superadmin can test their own nudges');
+    }
+    if (!p.active) throw new HttpError(409, 'this person is deactivated');
+    return p;
+  }
+
+  function previewFor(p: PersonRow) {
+    const settings = { ...getTaskSettings(db), ...(deps.publicUrl && { publicUrl: deps.publicUrl }) };
+    const tasks = listTasks(db, [p.id], undefined);
+    return previewDigest(p, tasks, clock(), settings);
+  }
+
+  const targetLabel = (t: { type: string; chatId: string }) => ({ type: t.type, chatId: t.chatId });
+
+  function getPreview(user: SessionUser, query: URLSearchParams): ApiResult {
+    const p = previewSubject(user, query.get('person'));
+    const r = previewFor(p);
+    if (!r.ok) {
+      return ok({ person: { id: p.id, name: p.name }, ready: false, reason: r.reason, ...(r.reason === 'no_target' && { detail: r.detail }) });
+    }
+    return ok({ person: { id: p.id, name: p.name }, ready: true, mode: r.mode, target: targetLabel(r.target), message: r.message, taskCount: r.taskIds.length });
+  }
+
+  async function sendPreview(user: SessionUser, body: unknown): Promise<ApiResult> {
+    const p = previewSubject(user, (body as { personId?: unknown } | null)?.personId);
+    const r = previewFor(p);
+    if (!r.ok) {
+      throw new HttpError(409, r.reason === 'no_target' ? `Nudges can't be delivered yet: ${r.detail}` : 'No open tasks with a due date to preview');
+    }
+    const whatsapp = wa();
+    const nowMs = clock().getTime();
+    const last = lastTestNudge.get(p.id);
+    if (last !== undefined && nowMs - last < TEST_NUDGE_COOLDOWN_MS) throw new HttpError(429, 'Wait a few seconds before sending another test');
+    lastTestNudge.set(p.id, nowMs);
+    const text = `🧪 [TEST] Preview of a ${deps.appName ?? 'Nudge'} reminder, nothing is due because of this message.\n\n${r.message}`;
+    try {
+      if (r.target.type === 'dm') await whatsapp.sendDirectMessage(r.target.chatId, text);
+      else await whatsapp.sendGroupMessage(r.target.chatId, text, r.target.mentions);
+    } catch (err) {
+      lastTestNudge.delete(p.id);
+      log.warn('test digest failed', { personId: p.id, target: r.target.type, err: err instanceof Error ? err.message : String(err) });
+      throw wahaFail('could not send the test message', err);
+    }
+    addAudit(db, user.email, 'person_test_digest', { id: p.id, email: p.email, target: targetLabel(r.target), tasks: r.taskIds.length, mode: r.mode });
+    return ok({ target: targetLabel(r.target), taskCount: r.taskIds.length, mode: r.mode });
   }
 
   // ----- admin: people -----
@@ -294,6 +353,8 @@ export function createNudgeApi(deps: NudgeApiDeps) {
       case 'app':
         if (sub === 'owners' && method === 'GET' && segments.length === 2) result = ok(visibleOwners(db, user));
         else if (sub === 'nudge-target' && method === 'GET' && segments.length === 2) result = nudgeTarget(user);
+        else if (sub === 'nudge-preview' && method === 'GET' && segments.length === 2) result = getPreview(user, query);
+        else if (sub === 'nudge-preview' && segments[2] === 'send' && method === 'POST' && segments.length === 3) result = await sendPreview(user, body);
         else if (sub === 'tasks' && method === 'GET' && segments.length === 2) result = getTasks(user, query);
         else if (sub === 'tasks') result = taskRoutes(user, method, segments, body);
         break;

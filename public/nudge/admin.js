@@ -1,9 +1,10 @@
-// Nudge admin area (admin and superadmin only): People, Access, Notifications, Audit.
+// Nudge admin area (admin and superadmin only): People, Access, Notifications, Audit. Material 3 lists, cards and sheets.
 // Works online only: nothing here is queued in the outbox. The server enforces every rule; the UI only hides or
 // disables what the server would refuse. All text is inserted with textContent / text nodes. Times are IST.
-import { fmtDateTime, fmtRelative } from './sync-core.js';
+// Also exports nudgePreviewBlock (test a person's nudge), used by "My nudges" for every user.
+import { fmtDateTime, fmtRelative, fmtTime } from './sync-core.js';
 
-export const ADMIN_TABS = [['people', 'People'], ['access', 'Access'], ['notifications', 'Notifications'], ['audit', 'Audit']];
+export const ADMIN_TABS = [['people', 'People', 'users'], ['access', 'Access', 'eye'], ['notifications', 'Notifications', 'bell-ring'], ['audit', 'Audit', 'history']];
 
 const initials = (name) => (String(name).trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join('') || '?').toUpperCase();
 const groupState = { list: null, error: null };
@@ -13,29 +14,29 @@ function fill(node, ...kids) {
   node.append(...kids.flat().filter((k) => k !== false && k !== null && k !== undefined));
   return node;
 }
+const errText = (e) => (e.network ? 'You are offline. Admin changes need a connection.' : e.message);
 
-/** ctx: { h, clear, icon, api, toast, openSheet, S } from app.js. */
+/** ctx: { h, clear, icon, api, toast, openSheet, sheetHead, listItem, S } from app.js. */
 export function renderAdminPage(ctx, mount, tab) {
   const { h, clear, icon, S } = ctx;
   const t = ADMIN_TABS.some(([k]) => k === tab) ? tab : 'people';
   const body = h('div', { class: 'admin-body' });
   clear(mount).append(
-    h('div', { class: 'page-top' }, h('a', { class: 'icon-btn', href: '#/', 'aria-label': 'Back to my tasks' }, icon('chevron-left', 'lg')), h('h2', {}, 'Admin')),
-    h('nav', { class: 'seg admin-tabs', 'aria-label': 'Admin sections' },
-      ADMIN_TABS.map(([k, label]) => h('a', { href: '#/admin/' + k, 'aria-current': k === t ? 'page' : false }, label))),
+    h('nav', { class: 'tabs', 'aria-label': 'Admin sections' },
+      ADMIN_TABS.map(([k, label, ic]) => h('a', { class: 'tab', href: '#/admin/' + k, 'aria-current': k === t ? 'page' : false }, icon(ic, 'sm'), label))),
     body);
   const run = { people: renderPeople, access: renderAccess, notifications: renderNotifications, audit: renderAudit }[t];
   // The admin area needs a connection: offline (or a network failure) shows the message instead of a form.
   const offline = () => {
-    clear(body).append(h('div', { class: 'empty', id: 'admin-offline' }, icon('alert-triangle', 'xl'), h('h2', {}, 'Admin needs a connection'),
+    fill(body, h('div', { class: 'empty', id: 'admin-offline' }, h('div', { class: 'icon-wrap' }, icon('cloud-off', 'xl')), h('h2', {}, 'Admin needs a connection'),
       h('p', {}, 'People, access and notification settings can only be changed online. Your tasks still work offline.'),
-      h('button', { type: 'button', class: 'btn', onclick: () => renderAdminPage(ctx, mount, t) }, 'Try again')));
+      h('button', { type: 'button', class: 'btn tonal', onclick: () => renderAdminPage(ctx, mount, t) }, icon('refresh-cw'), 'Try again')));
   };
   if (!navigator.onLine || !S.online) { offline(); return; }
-  clear(body).append(h('div', { 'aria-hidden': 'true' }, h('div', { class: 'skeleton' }), h('div', { class: 'skeleton' })));
+  fill(body, h('div', { 'aria-hidden': 'true' }, h('div', { class: 'skeleton' }), h('div', { class: 'skeleton' })));
   run({ ...ctx, offline, body }).catch((e) => {
     if (e.network) offline();
-    else clear(body).append(h('div', { class: 'callout danger', role: 'alert' }, e.status === 403 ? 'Admins only.' : e.message));
+    else fill(body, h('div', { class: 'callout danger', role: 'alert' }, icon('alert-triangle'), h('span', {}, e.status === 403 ? 'Admins only.' : e.message)));
   });
 }
 
@@ -48,6 +49,7 @@ function field(ctx, label, control, { error, help, id } = {}) {
     help && h('p', { class: 'small muted' }, help),
     error && h('p', { class: 'error-text', role: 'alert' }, error));
 }
+const cardTitle = (ctx, ic, text, extra) => ctx.h('div', { class: 'block-label' }, ctx.icon(ic, 'sm'), text, extra && ctx.h('span', { class: 'spacer' }), extra);
 
 async function loadGroups(ctx, refresh) {
   try {
@@ -72,28 +74,23 @@ function groupPicker(ctx, { value, onPick, allowNone }) {
   const { h, icon } = ctx;
   let query = '';
   let manual = false;
-  const box = h('div', { class: 'picker' });
+  const box = h('div', { class: 'stack' });
   const list = h('div', { class: 'picker-list', role: 'radiogroup', 'aria-label': 'WhatsApp group' });
   const status = h('p', { class: 'small muted' });
   const manualBox = h('div', { class: 'manual-id' });
-  const manualLink = h('button', { type: 'button', class: 'link-btn small', id: 'manual-id-link', onclick: () => { manual = true; draw(); const i = box.querySelector('#manual-id'); if (i) i.focus(); } }, 'Enter ID manually');
+  const manualLink = h('button', { type: 'button', class: 'link-btn', id: 'manual-id-link', onclick: () => { manual = true; draw(); const i = box.querySelector('#manual-id'); if (i) i.focus(); } }, 'Enter group ID manually');
+  const item = (checked, lead, head, sub, onclick) => h('button', { type: 'button', class: 'picker-item', role: 'radio', 'aria-checked': String(checked), onclick },
+    lead, h('span', { class: 'li-body' }, h('span', {}, head), sub && h('span', { class: 'small muted' }, sub)), h('span', { class: 'spacer' }), checked && icon('check', 'sm'));
   const draw = () => {
     ctx.clear(list);
     const q = query.trim().toLowerCase();
     const all = groupState.list || [];
     const items = all.filter((g) => !q || g.name.toLowerCase().includes(q));
-    if (allowNone) {
-      list.append(h('button', { type: 'button', class: 'picker-item', role: 'radio', 'aria-checked': String(!value), onclick: () => { value = null; onPick(null); draw(); } }, 'No default group'));
-    }
-    if (value && !all.some((g) => g.id === value)) {
-      list.append(h('button', { type: 'button', class: 'picker-item', role: 'radio', 'aria-checked': 'true' }, h('span', {}, 'Current group'), h('span', { class: 'small muted' }, value)));
-    }
-    for (const g of items) {
-      list.append(h('button', { type: 'button', class: 'picker-item', role: 'radio', 'aria-checked': String(g.id === value), onclick: () => { value = g.id; onPick(g.id); draw(); } },
-        h('span', {}, g.name), g.id === value && icon('check', 'sm')));
-    }
-    if (!all.length) list.append(h('p', { class: 'small muted' }, groupState.error ? 'Could not load groups.' : 'No groups found.'));
-    status.textContent = groupState.error ? `${groupState.error}. Is WhatsApp connected?` : `${all.length} groups`;
+    if (allowNone) list.append(item(!value, icon('x', 'sm'), 'No default group', null, () => { value = null; onPick(null); draw(); }));
+    if (value && !all.some((g) => g.id === value)) list.append(item(true, icon('users', 'sm'), 'Current group', value, () => {}));
+    for (const g of items) list.append(item(g.id === value, icon('users', 'sm'), g.name, null, () => { value = g.id; onPick(g.id); draw(); }));
+    if (!all.length) list.append(h('p', { class: 'small muted card-pad' }, groupState.error ? 'Could not load groups.' : 'No groups found.'));
+    status.textContent = groupState.error ? `${groupState.error}. Is WhatsApp connected?` : `${all.length} groups · the WhatsApp number must be a member`;
     // the manual field shows when the list failed or is empty, or when asked for
     const showManual = manual || !all.length || !!groupState.error; // a failed refresh shows it even if a stale list is cached
     manualLink.hidden = showManual;
@@ -107,17 +104,19 @@ function groupPicker(ctx, { value, onPick, allowNone }) {
         value = id; onPick(id); manual = false; draw();
       };
       input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); use(); } });
-      manualBox.append(h('div', { class: 'qa-pick' }, input, h('button', { type: 'button', class: 'btn secondary', id: 'manual-id-use', onclick: use }, 'Use')), err);
+      manualBox.append(h('div', { class: 'input-row' }, input, h('button', { type: 'button', class: 'btn tonal', id: 'manual-id-use', onclick: use }, 'Use')), err);
     }
   };
-  const search = h('input', { class: 'input', type: 'search', placeholder: 'Search groups…', 'aria-label': 'Search groups', oninput: (ev) => { query = ev.target.value; draw(); } });
-  const refresh = h('button', { type: 'button', class: 'btn secondary', 'aria-label': 'Refresh groups', onclick: async () => {
+  const search = h('label', { class: 'search' }, icon('search', 'sm'),
+    h('input', { type: 'search', placeholder: 'Search groups', 'aria-label': 'Search groups', oninput: (ev) => { query = ev.target.value; draw(); } }));
+  const refresh = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Refresh groups', title: 'Refresh groups', onclick: async () => {
     refresh.disabled = true;
     try { await loadGroups(ctx, true); } catch { ctx.toast('You are offline.', { kind: 'error' }); }
     refresh.disabled = false;
     draw();
-  } }, icon('refresh-cw', 'sm'), 'Refresh');
-  box.append(h('div', { class: 'qa-pick' }, search, refresh), list, status, manualLink, manualBox);
+  } }, icon('refresh-cw'));
+  search.append(refresh);
+  box.append(search, list, status, manualLink, manualBox);
   if (groupState.list === null) loadGroups(ctx, false).then(draw).catch(() => draw());
   draw();
   return box;
@@ -126,8 +125,57 @@ function groupPicker(ctx, { value, onPick, allowNone }) {
 const targetLabel = (p, defaultGroupId) => {
   if (p.notifyTarget === 'dm') return 'Direct message';
   if (p.notifyTarget === 'group') return groupName(p.notifyGroupId) || 'A WhatsApp group';
-  return defaultGroupId ? `Default group${groupName(defaultGroupId) ? ` (${groupName(defaultGroupId)})` : ''}` : 'Default group (not set)';
+  return defaultGroupId ? `Team group${groupName(defaultGroupId) ? ` · ${groupName(defaultGroupId)}` : ''}` : 'Team group (not set)';
 };
+
+// ---------- test notifications ----------
+
+/**
+ * "Test a nudge": shows the exact WhatsApp message a person would get right now (from the server, built by the real
+ * nudge formatter), where it goes, and sends it as a [TEST]. `personId` null = yourself.
+ */
+export function nudgePreviewBlock(ctx, { personId, label }) {
+  const { h, icon, api, toast } = ctx;
+  const box = h('div', { class: 'stack', 'data-preview': '' });
+  const q = personId ? `?person=${personId}` : '';
+  const start = () => fill(box, h('button', { type: 'button', class: 'btn tonal', id: 'preview-btn', onclick: load }, icon('flask-conical'), label || 'Preview message'));
+  async function load() {
+    fill(box, h('p', { class: 'muted' }, 'Building the preview…'));
+    let r;
+    try { r = await api('GET', '/api/app/nudge-preview' + q); } catch (e) {
+      fill(box, h('div', { class: 'callout danger', role: 'alert' }, icon('alert-triangle'), h('span', {}, errText(e))), h('button', { type: 'button', class: 'btn text', onclick: load }, icon('refresh-cw'), 'Try again'));
+      return;
+    }
+    if (!r.ready) {
+      const why = r.reason === 'no_target'
+        ? `Nudges can't be delivered yet: ${r.detail}. ${personId ? 'Set a WhatsApp number and where nudges go in People.' : 'Ask an admin to set your WhatsApp number and where your nudges go.'}`
+        : `${personId ? `${r.person.name} has` : 'You have'} no open tasks with a due date yet. Add one with a due time to see a preview.`;
+      fill(box, h('div', { class: 'callout warn' }, icon('info'), h('span', {}, why)), h('button', { type: 'button', class: 'btn text', onclick: load }, icon('refresh-cw'), 'Check again'));
+      return;
+    }
+    const to = r.target.type === 'dm' ? 'Direct message' : (groupName(r.target.chatId) || 'WhatsApp group');
+    const send = h('button', { type: 'button', class: 'btn', id: 'preview-send' }, icon('send'), 'Send test now');
+    send.addEventListener('click', async () => {
+      send.disabled = true;
+      try {
+        const res = await api('POST', '/api/app/nudge-preview/send', personId ? { personId } : {});
+        toast(`Test sent to ${res.target.type === 'dm' ? 'WhatsApp (direct message)' : to}`);
+      } catch (e) {
+        toast(e.status === 429 ? 'Wait a few seconds before sending another test.' : errText(e), { kind: 'error' });
+      }
+      send.disabled = false;
+    });
+    fill(box,
+      r.mode === 'upcoming' && h('p', { class: 'small muted' }, 'Nothing is due right now, so this shows upcoming tasks in the real format.'),
+      h('div', { class: 'wa-chat' },
+        h('div', { class: 'wa-to' }, icon(r.target.type === 'dm' ? 'user' : 'users', 'xs'), `To: ${to}`),
+        h('div', { class: 'wa-bubble' }, h('span', {}, `🧪 [TEST]\n\n${r.message}`), h('span', { class: 'wa-time' }, fmtTime(Date.now())))),
+      h('p', { class: 'small muted' }, 'Sent marked [TEST]. Real nudge timing does not change. One test per person every 30 seconds.'),
+      h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn text', onclick: load }, icon('refresh-cw'), 'Refresh'), h('span', { class: 'spacer' }), send));
+  }
+  start();
+  return box;
+}
 
 // ---------- People ----------
 
@@ -136,44 +184,44 @@ async function renderPeople(ctx) {
   const [people, settings] = await Promise.all([api('GET', '/api/people'), api('GET', '/api/task-settings')]);
   await loadGroups(ctx, false);
   let query = '';
-  const list = h('ul', { class: 'task-list people-list' });
+  const list = h('div', { class: 'card people-list', id: 'people-list' });
+  const count = h('span', { class: 'small muted' });
   const draw = () => {
     clear(list);
     const q = query.trim().toLowerCase();
     const rows = people.filter((p) => !q || p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q));
-    if (!rows.length) list.append(h('li', { class: 'empty' }, h('p', {}, people.length ? 'No one matches that search.' : 'No people yet. Add the first one.')));
+    count.textContent = `${rows.length} of ${people.length}`;
+    if (!rows.length) list.append(h('div', { class: 'empty' }, h('div', { class: 'icon-wrap' }, icon('users', 'xl')), h('p', {}, people.length ? 'No one matches that search.' : 'No people yet. Add the first one.')));
     for (const p of rows) list.append(personRow(p));
   };
   const reload = async () => { people.splice(0, people.length, ...(await api('GET', '/api/people'))); draw(); };
   const isSuper = S.me.role === 'superadmin';
   const personRow = (p) => {
     const locked = p.isSuperadmin && !isSuper;
-    const owner = p.isSuperadmin;
-    const main = h('div', { class: 'person-main' },
-      h('div', { class: 'row-title' }, p.name, ' ',
-        owner && h('span', { class: 'pill owner' }, isSuper ? 'Owner (you)' : 'Owner'),
-        !owner && h('span', { class: 'pill role-' + p.role }, p.role === 'admin' ? 'Admin' : 'Member'),
-        !p.active && h('span', { class: 'pill off' }, 'Inactive')),
-      h('div', { class: 'row-meta' }, h('span', {}, p.email), p.whatsapp && h('span', {}, '+' + p.whatsapp)),
-      h('div', { class: 'row-meta' }, icon('send', 'sm'), `Nudges go to: ${targetLabel(p, settings.defaultGroupId)}`));
-    const li = h('li', { class: 'task-row person-row' + (p.active ? '' : ' is-done'), 'data-id': p.id },
-      h('span', { class: 'avatar' }, initials(p.name)),
-      locked
-        ? h('div', { class: 'row-main', title: 'Only the owner can edit this row' }, main)
-        : h('button', { type: 'button', class: 'row-main person-open', 'aria-label': `Edit ${p.name}`, onclick: () => personSheet(ctx, p, settings, reload) }, main),
-      locked && h('span', { class: 'lock', 'aria-label': 'Locked: only the owner can edit this row' }, icon('lock')));
-    return li;
+    const head = [p.name,
+      p.isSuperadmin ? h('span', { class: 'pill owner' }, isSuper ? 'Owner (you)' : 'Owner') : p.role === 'admin' && h('span', { class: 'pill admin' }, 'Admin'),
+      !p.active && h('span', { class: 'pill error' }, 'Inactive')];
+    const sub = [h('span', {}, p.email + (p.whatsapp ? ` · +${p.whatsapp}` : '')),
+      h('span', { class: 'meta' }, icon('send', 'xs'), targetLabel(p, settings.defaultGroupId))];
+    return ctx.listItem({
+      lead: h('span', { class: 'avatar' }, initials(p.name)), head, sub: h('span', { class: 'stack-tight' }, sub),
+      trail: locked ? icon('lock', 'sm') : icon('chevron-right', 'sm'), cls: 'person-row' + (p.active ? '' : ' inactive'),
+      label: locked ? `${p.name}, locked: only the owner can edit this row` : `Edit ${p.name}`,
+      ...(locked ? {} : { onclick: () => personSheet(ctx, p, settings, reload) }), attrs: { 'data-id': p.id },
+    });
   };
-  clear(body).append(
-    h('div', { class: 'qa-pick' },
-      h('input', { class: 'input', type: 'search', id: 'people-search', placeholder: 'Search people…', 'aria-label': 'Search people', oninput: (ev) => { query = ev.target.value; draw(); } }),
-      h('button', { type: 'button', class: 'btn', id: 'add-person', onclick: () => personSheet(ctx, null, settings, reload) }, icon('plus', 'sm'), 'Add')),
+  fill(body, 
+    h('div', { class: 'toolbar' },
+      h('label', { class: 'search' }, icon('search', 'sm'), h('input', { type: 'search', id: 'people-search', placeholder: 'Search people', 'aria-label': 'Search people', oninput: (ev) => { query = ev.target.value; draw(); } })),
+      h('button', { type: 'button', class: 'btn', id: 'add-person', onclick: () => personSheet(ctx, null, settings, reload) }, icon('user-plus'), 'Add')),
+    !settings.defaultGroupId && h('div', { class: 'callout warn' }, icon('alert-triangle'), h('span', {}, 'No team group is set, so people on "Team group" get no nudges. Set it in Notifications.'), h('a', { class: 'btn text', href: '#/admin/notifications' }, 'Set')),
+    h('div', { class: 'row' }, h('span', { class: 'block-label' }, icon('users', 'sm'), 'People'), h('span', { class: 'spacer' }), count),
     list);
   draw();
 }
 
 function personSheet(ctx, person, settings, onDone) {
-  const { h, clear, icon, api, S, toast } = ctx;
+  const { h, icon, api, S, toast } = ctx;
   const actorSuper = S.me.role === 'superadmin';
   const ownerRow = !!person && person.isSuperadmin;
   const st = {
@@ -188,17 +236,16 @@ function personSheet(ctx, person, settings, onDone) {
   // the deactivate/reactivate confirmation happens inside this same sheet, so Cancel returns to the form with its state intact
   const confirmToggle = (activate) => {
     fill(content,
-      h('h2', {}, `${activate ? 'Reactivate' : 'Deactivate'} ${person.name}?`),
-      h('p', { class: 'sub' }, activate ? 'They can sign in and get nudges again.' : 'They are signed out, stop getting nudges and can no longer sign in. Their tasks are kept.'),
-      h('div', { class: 'btn-row' },
-        h('button', { type: 'button', class: 'btn secondary', id: 'confirm-cancel', onclick: draw }, 'Cancel'),
+      ...ctx.sheetHead(`${activate ? 'Reactivate' : 'Deactivate'} ${person.name}?`, activate ? 'They can sign in and get nudges again.' : 'They are signed out, stop getting nudges and can no longer sign in. Their tasks are kept.'),
+      h('div', { class: 'sheet-actions' },
+        h('button', { type: 'button', class: 'btn text', id: 'confirm-cancel', onclick: draw }, 'Cancel'),
         h('button', { type: 'button', class: 'btn' + (activate ? '' : ' danger'), id: 'confirm-toggle', onclick: async () => {
           try {
             if (activate) {
               await api('PUT', `/api/people/${person.id}`, { email: person.email, name: person.name, whatsapp: person.whatsapp, role: person.role, active: true, notifyTarget: person.notifyTarget, notifyGroupId: person.notifyGroupId });
             } else await api('DELETE', `/api/people/${person.id}`);
             close(); toast(activate ? 'Reactivated' : 'Deactivated'); await onDone();
-          } catch (e) { toast(e.network ? 'You are offline.' : e.message, { kind: 'error' }); draw(); }
+          } catch (e) { toast(errText(e), { kind: 'error' }); draw(); }
         } }, activate ? 'Reactivate' : 'Deactivate')));
     const cancel = content.querySelector('#confirm-cancel');
     if (cancel) cancel.focus();
@@ -208,48 +255,59 @@ function personSheet(ctx, person, settings, onDone) {
     btn.disabled = true;
     try {
       const r = await api('POST', `/api/people/${person.id}/test-nudge`, {});
-      toast(r.target.type === 'dm' ? `Test nudge sent as a direct message to ${person.name}` : `Test nudge sent to ${groupName(r.target.chatId) || 'the group'}`);
-    } catch (e) { toast(e.network ? 'You are offline.' : e.message, { kind: 'error' }); }
+      toast(r.target.type === 'dm' ? `Setup test sent to ${person.name} (direct message)` : `Setup test sent to ${groupName(r.target.chatId) || 'the group'}`);
+    } catch (e) { toast(e.status === 429 ? 'Wait a few seconds before sending another test.' : errText(e), { kind: 'error' }); }
     btn.disabled = false;
+  };
+  const previewSheet = () => {
+    const c = h('div', {});
+    ctx.openSheet(c, { label: `Test ${person.name}'s nudge` });
+    c.append(...ctx.sheetHead(`Test ${person.name}’s nudge`, 'The exact message they would get right now'),
+      h('div', { class: 'sheet-body' }, nudgePreviewBlock(ctx, { personId: person.id, label: 'Preview message' })));
   };
 
   const draw = () => {
     const err = st.errors;
-    const name = h('input', { id: 'p-name', class: 'input', type: 'text', maxlength: '100', value: st.name, autocomplete: 'off', oninput: (ev) => { st.name = ev.target.value; } });
+    const name = h('input', { id: 'p-name', class: 'input', type: 'text', maxlength: '100', autocomplete: 'off', oninput: (ev) => { st.name = ev.target.value; } });
     name.value = st.name;
-    const email = h('input', { id: 'p-email', class: 'input', type: 'email', value: st.email, autocomplete: 'off', disabled: ownerRow || adminRow, oninput: (ev) => { st.email = ev.target.value; } });
+    const email = h('input', { id: 'p-email', class: 'input', type: 'email', autocomplete: 'off', disabled: ownerRow || adminRow, oninput: (ev) => { st.email = ev.target.value; } });
     email.value = st.email;
-    const wa = h('input', { id: 'p-wa', class: 'input', type: 'tel', inputmode: 'tel', value: st.whatsapp, placeholder: '919812345678', oninput: (ev) => { st.whatsapp = ev.target.value; } });
+    const wa = h('input', { id: 'p-wa', class: 'input', type: 'tel', inputmode: 'tel', placeholder: '919812345678', oninput: (ev) => { st.whatsapp = ev.target.value; } });
     wa.value = st.whatsapp;
     const role = h('select', { id: 'p-role', class: 'input', disabled: ownerRow || adminRow, onchange: (ev) => { st.role = ev.target.value; } },
       h('option', { value: 'member' }, 'Member'),
       h('option', { value: 'admin', disabled: !actorSuper }, actorSuper ? 'Admin' : 'Admin (only the owner can grant this)'));
     role.value = st.role;
     const seg = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Where nudges go' },
-      [['default', 'Default group'], ['group', 'A group'], ['dm', 'Direct message']].map(([v, l]) =>
-        h('button', { type: 'button', role: 'radio', 'aria-checked': String(st.target === v), 'data-v': v, onclick: () => { st.target = v; draw(); } }, l)));
+      [['default', 'Team group', 'users'], ['group', 'Other group', 'message-circle'], ['dm', 'Direct', 'user']].map(([v, l, ic]) =>
+        h('button', { type: 'button', role: 'radio', 'aria-checked': String(st.target === v), 'data-v': v, onclick: () => { st.target = v; draw(); } }, icon(ic, 'xs'), l)));
     fill(content,
-      h('h2', {}, person ? (ownerRow ? 'Edit your own row' : 'Edit person') : 'Add person'),
-      ownerRow && h('p', { class: 'sub' }, 'Owner (you): name, WhatsApp and nudge target can change. Email, role and active state are fixed.'),
-      field(ctx, 'Name', name, { error: err.name, id: 'p-name' }),
-      field(ctx, 'Email', email, { error: err.email, id: 'p-email', help: adminRow ? "Only the owner can change an admin's email." : 'They sign in with a code sent here.' }),
-      field(ctx, 'WhatsApp', wa, { error: err.whatsapp, id: 'p-wa', help: 'International format with country code, digits only, e.g. 919812345678. Needed to be mentioned in a group or to get a direct message.' }),
-      field(ctx, 'Role', role, { error: err.role, id: 'p-role', help: actorSuper ? 'Admins can manage people, access and settings.' : 'Only the owner can make someone an admin.' }),
-      h('div', { class: 'field' }, h('label', {}, 'Nudges go to'), seg,
-        st.target === 'default' && h('p', { class: 'small muted' }, settings.defaultGroupId ? `The default group${groupName(settings.defaultGroupId) ? `: ${groupName(settings.defaultGroupId)}` : ''}, mentioning them.` : 'No default group is set yet (see Notifications).'),
-        st.target === 'dm' && h('p', { class: 'small muted' }, 'A direct WhatsApp message to their number.'),
-        st.target === 'group' && groupPicker(ctx, { value: st.groupId || null, onPick: (id) => { st.groupId = id || ''; } }),
-        err.notifyGroupId && h('p', { class: 'error-text', role: 'alert' }, err.notifyGroupId)),
-      err._form && h('p', { class: 'error-text', role: 'alert' }, err._form),
-      h('div', { class: 'btn-row' },
-        h('button', { type: 'button', class: 'btn secondary', onclick: close }, 'Cancel'),
+      ...ctx.sheetHead(person ? (ownerRow ? 'Your details' : person.name) : 'Add person',
+        ownerRow ? 'Name, WhatsApp and where your nudges go can change. Email and role are fixed.' : person ? person.email : 'They sign in with a code sent to their email.'),
+      h('div', { class: 'sheet-body' },
+        field(ctx, 'Name', name, { error: err.name, id: 'p-name' }),
+        field(ctx, 'Email', email, { error: err.email, id: 'p-email', help: adminRow ? "Only the owner can change an admin's email." : null }),
+        field(ctx, 'WhatsApp number', wa, { error: err.whatsapp, id: 'p-wa', help: 'With country code, e.g. 919812345678. Needed to be tagged in a group or to get a direct message.' }),
+        field(ctx, 'Role', role, { error: err.role, id: 'p-role', help: actorSuper ? 'Admins can manage people, access and settings.' : 'Only the owner can make someone an admin.' }),
+        h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Nudges go to'), seg,
+          st.target === 'default' && h('p', { class: 'small muted' }, settings.defaultGroupId ? `The team group${groupName(settings.defaultGroupId) ? ` (${groupName(settings.defaultGroupId)})` : ''}, tagging them.` : 'No team group is set yet (Admin → Notifications).'),
+          st.target === 'dm' && h('p', { class: 'small muted' }, 'A direct WhatsApp message to their number.'),
+          st.target === 'group' && groupPicker(ctx, { value: st.groupId || null, onPick: (id) => { st.groupId = id || ''; } }),
+          err.notifyGroupId && h('p', { class: 'error-text', role: 'alert' }, err.notifyGroupId)),
+        err._form && h('div', { class: 'callout danger', role: 'alert' }, icon('alert-triangle'), h('span', {}, err._form))),
+      h('div', { class: 'sheet-actions' },
+        h('button', { type: 'button', class: 'btn text', onclick: close }, 'Cancel'),
         h('button', { type: 'button', class: 'btn', id: 'save-person', disabled: st.busy, onclick: save }, person ? 'Save' : 'Add person')),
-      person && h('div', { class: 'menu-list' },
-        h('div', { class: 'menu-sep' }),
-        person.active && h('button', { type: 'button', class: 'menu-item', id: 'test-nudge', onclick: (ev) => testNudge(ev.currentTarget) }, icon('send'), 'Send test nudge'),
+      person && h('div', { class: 'list' },
+        h('div', { class: 'sheet-divider' }),
+        person.active && ctx.listItem({ lead: icon('flask-conical'), head: 'Test their nudge', sub: 'Preview the real message and send it as a test', onclick: previewSheet }),
+        person.active && h('button', { type: 'button', class: 'list-item two clickable', id: 'test-nudge', onclick: (ev) => testNudge(ev.currentTarget) },
+          h('span', { class: 'li-lead' }, icon('send')), h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, 'Send setup test'), h('span', { class: 'li-sub' }, 'A one-line message to check where nudges arrive'))),
         !ownerRow && (person.active
-          ? h('button', { type: 'button', class: 'menu-item danger', id: 'deactivate', disabled: adminRow, onclick: () => confirmToggle(false) }, icon('x'), adminRow ? 'Deactivate (only the owner can for admins)' : 'Deactivate')
-          : h('button', { type: 'button', class: 'menu-item', id: 'reactivate', disabled: adminRow, onclick: () => confirmToggle(true) }, icon('refresh-cw'), adminRow ? 'Reactivate (only the owner can for admins)' : 'Reactivate'))));
+          ? h('button', { type: 'button', class: 'list-item clickable danger', id: 'deactivate', disabled: adminRow, onclick: () => confirmToggle(false) },
+            h('span', { class: 'li-lead' }, icon('x')), h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, adminRow ? 'Deactivate (only the owner can for admins)' : 'Deactivate')))
+          : h('button', { type: 'button', class: 'list-item clickable', id: 'reactivate', disabled: adminRow, onclick: () => confirmToggle(true) },
+            h('span', { class: 'li-lead' }, icon('rotate-ccw')), h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, adminRow ? 'Reactivate (only the owner can for admins)' : 'Reactivate'))))));
   };
 
   async function save() {
@@ -262,10 +320,10 @@ function personSheet(ctx, person, settings, onDone) {
       else await api('POST', '/api/people', payload);
       close(); toast(person ? 'Saved' : 'Person added'); await onDone();
     } catch (e) {
-      if (e.network) st.errors = { _form: 'You are offline. Admin changes need a connection.' };
+      if (e.network) st.errors = { _form: errText(e) };
       else st.errors = { ...((e.body && e.body.fields) || {}), ...(e.body && e.body.fields ? {} : { _form: e.message }) };
       st.busy = false; draw();
-      const first = content.querySelector('.error-text');
+      const first = content.querySelector('.error-text, .callout.danger');
       if (first) first.scrollIntoView({ block: 'nearest' });
     }
   }
@@ -280,14 +338,14 @@ async function renderAccess(ctx) {
   const active = people.filter((p) => p.active);
   const isSuper = S.me.role === 'superadmin';
   let selected = active.find((p) => p.id === S.me.personId) || active[0];
-  const view = h('div', {});
+  const view = h('div', { class: 'stack' });
   const reload = async () => { grants = await api('GET', '/api/access-grants'); draw(); };
   const act = async (fn, okText) => {
     try { await fn(); if (okText) ctx.toast(okText); await reload(); }
-    catch (e) { ctx.toast(e.network ? 'You are offline.' : e.message, { kind: 'error' }); await reload().catch(() => {}); }
+    catch (e) { ctx.toast(errText(e), { kind: 'error' }); await reload().catch(() => {}); }
   };
   const levelSeg = (level, onChange, disabled) => h('div', { class: 'seg mini', role: 'radiogroup', 'aria-label': 'Access level' },
-    [['view', 'View'], ['edit', 'Edit']].map(([v, l]) => h('button', { type: 'button', role: 'radio', 'aria-checked': String(level === v), disabled, onclick: () => { if (level !== v) onChange(v); } }, l)));
+    [['view', 'View', 'eye'], ['edit', 'Edit', 'pencil']].map(([v, l, ic]) => h('button', { type: 'button', role: 'radio', 'aria-checked': String(level === v), disabled, onclick: () => { if (level !== v) onChange(v); } }, icon(ic, 'xs'), l)));
 
   function draw() {
     if (!selected) { clear(view).append(h('p', { class: 'muted' }, 'No people yet.')); return; }
@@ -301,40 +359,42 @@ async function renderAccess(ctx) {
     const picker = h('select', { class: 'input', id: 'access-person', 'aria-label': 'Person', onchange: (ev) => { selected = active.find((p) => p.id === Number(ev.target.value)); draw(); } },
       active.map((p) => h('option', { value: p.id }, p.name + (p.id === S.me.personId ? ' (me)' : ''))));
     picker.value = String(selected.id);
-    const addSel = h('select', { class: 'input', id: 'access-add-person', 'aria-label': 'Add access for', disabled: lockedList || !candidates.length, onchange: (ev) => { addWho = Number(ev.target.value); } },
+    const addSel = h('select', { class: 'input', id: 'access-add-person', 'aria-label': 'Give access to', disabled: lockedList || !candidates.length, onchange: (ev) => { addWho = Number(ev.target.value); } },
       candidates.map((p) => h('option', { value: p.id }, p.name)));
-    const addSeg = h('div', { class: 'seg mini', role: 'radiogroup', 'aria-label': 'New access level' },
-      [['view', 'View'], ['edit', 'Edit']].map(([v, l]) => h('button', { type: 'button', role: 'radio', 'aria-checked': String(addLevel === v), disabled: lockedList, onclick: (ev) => {
+    const addSeg = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'New access level' },
+      [['view', 'Can view', 'eye'], ['edit', 'Can edit', 'pencil']].map(([v, l, ic]) => h('button', { type: 'button', role: 'radio', 'aria-checked': String(addLevel === v), disabled: lockedList, onclick: (ev) => {
         addLevel = v;
         for (const b of ev.currentTarget.parentNode.children) b.setAttribute('aria-checked', String(b === ev.currentTarget));
-      } }, l)));
+      } }, icon(ic, 'xs'), l)));
+    const person = (name) => h('span', { class: 'avatar sm' }, initials(name));
     fill(view,
-      field(ctx, 'Person', picker, { id: 'access-person' }),
-      h('p', { class: 'callout' }, 'Everyone always sees their own list, and admins see every list. Access here lets a member see (View) or change (Edit) someone else\u2019s list.'),
-      lockedList && h('p', { class: 'callout danger' }, icon('lock', 'sm'), ' Only the owner can change access to the owner\u2019s list.'),
-      h('section', { class: 'task-card' }, h('div', { class: 'label' }, `Can see ${selected.name}\u2019s list`),
-        selected.role === 'admin' ? h('p', { class: 'small muted' }, 'Admins see all lists (not listed here).') : '',
-        h('ul', { class: 'access-list', id: 'access-see-mine' },
-          seeMine.length ? seeMine.map((g) => h('li', { class: 'access-row', 'data-grantee': g.granteePersonId },
-            h('span', { class: 'avatar' }, initials(g.granteeName)), h('span', { class: 'access-name' }, g.granteeName),
-            levelSeg(g.level, (lv) => act(() => api('POST', '/api/access-grants', { granteePersonId: g.granteePersonId, ownerPersonId: g.ownerPersonId, level: lv }), 'Access changed'), lockedList),
-            h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Remove ${g.granteeName}'s access`, disabled: lockedList, onclick: () => act(() => api('DELETE', `/api/access-grants/${g.id}`), 'Access removed') }, icon('trash-2', 'sm'))))
-            : h('li', { class: 'small muted' }, 'No one else can see this list yet.'))),
-      h('section', { class: 'task-card' }, h('div', { class: 'label' }, 'Add access'),
-        candidates.length ? h('div', { class: 'stack' }, addSel, addSeg,
-          h('button', { type: 'button', class: 'btn', id: 'add-access', disabled: lockedList, onclick: () => addWho && act(() => api('POST', '/api/access-grants', { granteePersonId: addWho, ownerPersonId: selected.id, level: addLevel }), 'Access added') }, icon('plus', 'sm'), 'Add access'))
-          : h('p', { class: 'small muted' }, 'Everyone already has access.')),
-      h('section', { class: 'task-card' }, h('div', { class: 'label' }, `Lists ${selected.name} can see`),
-        selected.role === 'admin' ? h('p', { class: 'small muted' }, 'Admins see all lists.') : '',
-        h('ul', { class: 'access-list', id: 'access-iSee' },
+      field(ctx, 'Whose list', picker, { id: 'access-person' }),
+      h('div', { class: 'callout info' }, icon('info'), h('span', {}, 'Everyone sees their own list and admins see every list. Grant access here so a member can view or edit someone else’s list.')),
+      lockedList && h('div', { class: 'callout danger' }, icon('lock'), h('span', {}, 'Only the owner can change access to the owner’s list.')),
+      h('div', {}, cardTitle(ctx, 'users', `Who can see ${selected.name}’s list`),
+        h('div', { class: 'card', id: 'access-see-mine' },
+          selected.role === 'admin' && h('p', { class: 'small muted card-pad' }, 'As an admin, this person already sees every list.'),
+          seeMine.length ? seeMine.map((g) => h('div', { class: 'list-item', 'data-grantee': g.granteePersonId },
+            h('span', { class: 'li-lead' }, person(g.granteeName)), h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, g.granteeName)),
+            h('span', { class: 'li-trail' }, levelSeg(g.level, (lv) => act(() => api('POST', '/api/access-grants', { granteePersonId: g.granteePersonId, ownerPersonId: g.ownerPersonId, level: lv }), 'Access changed'), lockedList),
+              h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Remove ${g.granteeName}'s access`, disabled: lockedList, onclick: () => act(() => api('DELETE', `/api/access-grants/${g.id}`), 'Access removed') }, icon('trash-2', 'sm')))))
+            : h('p', { class: 'muted card-pad' }, 'No one else can see this list yet.'))),
+      h('div', {}, cardTitle(ctx, 'user-plus', 'Give access'),
+        h('div', { class: 'card card-pad stack' },
+          candidates.length ? [field(ctx, 'Person', addSel, { id: 'access-add-person' }), addSeg,
+            h('button', { type: 'button', class: 'btn', id: 'add-access', disabled: lockedList, onclick: () => addWho && act(() => api('POST', '/api/access-grants', { granteePersonId: addWho, ownerPersonId: selected.id, level: addLevel }), 'Access added') }, icon('plus'), 'Give access')]
+            : h('p', { class: 'muted' }, 'Everyone already has access.'))),
+      h('div', {}, cardTitle(ctx, 'eye', `Lists ${selected.name} can see`),
+        h('div', { class: 'card', id: 'access-iSee' },
+          selected.role === 'admin' && h('p', { class: 'small muted card-pad' }, 'Admins see all lists.'),
           iSee.length ? iSee.map((g) => {
             const locked = g.ownerPersonId && (people.find((p) => p.id === g.ownerPersonId) || {}).isSuperadmin && !isSuper;
-            return h('li', { class: 'access-row' }, h('span', { class: 'avatar' }, initials(g.ownerName)), h('span', { class: 'access-name' }, g.ownerName),
-              h('span', { class: 'badge' }, g.level === 'edit' ? 'Edit' : 'View'),
-              h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Remove access to ${g.ownerName}'s list`, disabled: !!locked, onclick: () => act(() => api('DELETE', `/api/access-grants/${g.id}`), 'Access removed') }, icon('trash-2', 'sm')));
-          }) : h('li', { class: 'small muted' }, 'No lists beyond their own.'))));
+            return h('div', { class: 'list-item' }, h('span', { class: 'li-lead' }, person(g.ownerName)), h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, g.ownerName)),
+              h('span', { class: 'li-trail' }, h('span', { class: 'pill' }, g.level === 'edit' ? 'Can edit' : 'Can view'),
+                h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Remove access to ${g.ownerName}'s list`, disabled: !!locked, onclick: () => act(() => api('DELETE', `/api/access-grants/${g.id}`), 'Access removed') }, icon('trash-2', 'sm'))));
+          }) : h('p', { class: 'muted card-pad' }, 'No lists beyond their own.'))));
   }
-  clear(body).append(view);
+  fill(body, view);
   draw();
 }
 
@@ -356,89 +416,146 @@ export function previewText(s) {
   return text;
 }
 
+const STEPS = {
+  leadMinutes: [1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 360, 720, 1440],
+  repeatMinutes: [5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 360, 720, 1440],
+  mergeAheadMinutes: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+};
+const mins = (m) => (m >= 60 && m % 60 === 0 ? `${m / 60} h` : `${m} min`);
+
 async function renderNotifications(ctx) {
   const { h, clear, icon, api, body } = ctx;
-  const cur = await api('GET', '/api/task-settings');
+  const [cur, people] = await Promise.all([api('GET', '/api/task-settings'), api('GET', '/api/people')]);
   await loadGroups(ctx, false);
+  let saved = JSON.stringify(cur);
   const st = { ...cur, quietHours: { ...cur.quietHours } };
   let errors = {};
-  const preview = h('p', { class: 'callout', id: 'settings-preview', 'aria-live': 'polite' });
-  const upd = () => { preview.textContent = previewText(st); };
-  const num = (key, label, help, min, max) => {
-    const input = h('input', { id: 's-' + key, class: 'input', type: 'number', inputmode: 'numeric', min, max, step: '1', value: st[key], oninput: (ev) => { st[key] = ev.target.value === '' ? NaN : Number(ev.target.value); upd(); } });
-    input.value = String(st[key]);
-    return field(ctx, label, input, { id: 's-' + key, help, error: errors[key] });
+  let testPerson = (people.find((p) => p.active && p.id === ctx.S.me.personId) || people.find((p) => p.active) || {}).id;
+  const preview = h('span', { id: 'settings-preview', 'aria-live': 'polite' });
+  const dirtyText = h('span', { class: 'spacer small' });
+  const saveBtn = h('button', { type: 'button', class: 'btn', id: 'save-settings' }, icon('check'), 'Save');
+  const resetBtn = h('button', { type: 'button', class: 'btn text', onclick: () => { Object.assign(st, JSON.parse(saved)); errors = {}; draw(); } }, 'Discard');
+  const upd = () => {
+    preview.textContent = previewText(st);
+    const dirty = JSON.stringify(st) !== saved;
+    saveBtn.disabled = !dirty;
+    resetBtn.hidden = !dirty;
+    dirtyText.textContent = dirty ? 'Unsaved changes' : 'All changes saved';
+  };
+  const stepper = (key, label, sub, ic) => {
+    const list = STEPS[key].includes(st[key]) ? STEPS[key] : [...STEPS[key], st[key]].sort((a, b) => a - b);
+    const out = h('output', { id: 's-' + key, 'aria-live': 'polite' }, mins(st[key]));
+    const move = (d) => {
+      const i = list.indexOf(st[key]);
+      const n = list[Math.min(list.length - 1, Math.max(0, i + d))];
+      if (n === undefined || n === st[key]) return;
+      st[key] = n; out.textContent = mins(n); minus.disabled = n === list[0]; plus.disabled = n === list[list.length - 1]; upd();
+    };
+    const minus = h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Decrease ${label}`, disabled: st[key] === list[0], onclick: () => move(-1) }, icon('minus', 'sm'));
+    const plus = h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Increase ${label}`, disabled: st[key] === list[list.length - 1], onclick: () => move(1) }, icon('plus', 'sm'));
+    return h('div', { class: 'setting' }, h('span', { class: 'icon-chip' }, icon(ic, 'sm')),
+      h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, label), h('span', { class: 'li-sub' }, sub), errors[key] && h('span', { class: 'error-text' }, errors[key])),
+      h('span', { class: 'stepper' }, minus, out, plus));
+  };
+  const groupSheet = () => {
+    const c = h('div', {});
+    const close = ctx.openSheet(c, { label: 'Team group', keepOpen: true });
+    c.append(...ctx.sheetHead('Team group', 'Nudges for people on "Team group" go here, tagging them'),
+      h('div', { class: 'sheet-body' }, groupPicker(ctx, { value: st.defaultGroupId, allowNone: true, onPick: (id) => { st.defaultGroupId = id; } })),
+      h('div', { class: 'sheet-actions' }, h('button', { type: 'button', class: 'btn', onclick: () => { close(); draw(); } }, 'Done')));
   };
   const draw = () => {
     const qh = st.quietHours;
-    const time = (key, label) => {
-      const input = h('input', { id: 'q-' + key, class: 'input', type: 'time', value: qh[key], disabled: !qh.enabled, oninput: (ev) => { qh[key] = ev.target.value; upd(); } });
-      input.value = qh[key];
-      return field(ctx, label, input, { id: 'q-' + key });
-    };
-    const toggle = h('input', { id: 'q-enabled', type: 'checkbox', checked: qh.enabled, onchange: (ev) => { qh.enabled = ev.target.checked; draw(); } });
+    const toggle = h('input', { id: 'q-enabled', class: 'switch', type: 'checkbox', role: 'switch', 'aria-label': 'Quiet hours', onchange: (ev) => { qh.enabled = ev.target.checked; draw(); } });
     toggle.checked = qh.enabled;
-    clear(body).append(h('div', { class: 'stack' },
-      preview,
-      h('section', { class: 'task-card' }, h('div', { class: 'label' }, 'Default group'),
-        h('p', { class: 'small muted' }, 'Nudges for people without their own group go here, mentioning them.'),
-        groupPicker(ctx, { value: st.defaultGroupId, allowNone: true, onPick: (id) => { st.defaultGroupId = id; } }),
-        errors.defaultGroupId && h('p', { class: 'error-text', role: 'alert' }, errors.defaultGroupId)),
-      h('section', { class: 'task-card' }, h('div', { class: 'label' }, 'Timing'),
-        num('leadMinutes', 'First nudge (minutes before due)', 'When a task is this close to its due time, a nudge goes out. 1 to 1440.', 1, 1440),
-        num('repeatMinutes', 'Repeat every (minutes)', 'How often a person is nudged again until the task is done or snoozed. 5 to 1440.', 5, 1440),
-        num('mergeAheadMinutes', 'Group tasks due within (minutes)', 'When a nudge goes out anyway, tasks due this soon after are added to the same message. 0 turns it off, maximum 15.', 0, 15)),
-      h('section', { class: 'task-card' }, h('div', { class: 'label' }, 'Quiet hours (IST)'),
-        h('label', { class: 'toggle-row', for: 'q-enabled' }, toggle, h('span', {}, 'No nudges during quiet hours; they resume after.')),
-        h('div', { class: 'qa-pick' }, time('start', 'From'), time('end', 'Until')),
-        errors.quietHours && h('p', { class: 'error-text', role: 'alert' }, errors.quietHours)),
-      errors._form && h('p', { class: 'error-text', role: 'alert' }, errors._form),
-      h('button', { type: 'button', class: 'btn big block', id: 'save-settings', onclick: save }, icon('check'), 'Save settings')));
+    const time = (key, label, ic) => {
+      const input = h('input', { id: 'q-' + key, class: 'input time-input', type: 'time', 'aria-label': `${label} (IST)`, oninput: (ev) => { qh[key] = ev.target.value; upd(); } });
+      input.value = qh[key];
+      return h('div', { class: 'setting' }, h('span', { class: 'icon-chip' }, icon(ic, 'sm')), h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, label), h('span', { class: 'li-sub' }, 'IST')), input);
+    };
+    const gName = st.defaultGroupId ? (groupName(st.defaultGroupId) || st.defaultGroupId) : null;
+    const tester = h('select', { class: 'input', id: 'test-person', 'aria-label': 'Person to test', onchange: (ev) => { testPerson = Number(ev.target.value); drawTest(); } },
+      people.filter((p) => p.active).map((p) => h('option', { value: p.id }, p.name + (p.id === ctx.S.me.personId ? ' (me)' : ''))));
+    if (testPerson) tester.value = String(testPerson);
+    const testBox = h('div', {});
+    const drawTest = () => fill(testBox, testPerson ? nudgePreviewBlock(ctx, { personId: testPerson, label: 'Preview their nudge' }) : h('p', { class: 'muted' }, 'Add a person first.'));
+    fill(body, 
+      h('div', { class: 'callout info' }, icon('bell-ring'), preview),
+      h('div', {}, cardTitle(ctx, 'send', 'Delivery'),
+        h('div', { class: 'card' },
+          h('button', { type: 'button', class: 'setting list-item clickable', id: 'default-group', onclick: groupSheet },
+            h('span', { class: 'icon-chip' }, icon('users', 'sm')),
+            h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, 'Team group'),
+              h('span', { class: 'li-sub' }, gName || 'Not set: people on "Team group" get no nudges'), errors.defaultGroupId && h('span', { class: 'error-text' }, errors.defaultGroupId)),
+            gName ? icon('chevron-right', 'sm') : h('span', { class: 'pill warn' }, 'Set up')))),
+      h('div', {}, cardTitle(ctx, 'timer', 'Timing'),
+        h('div', { class: 'card' },
+          stepper('leadMinutes', 'First nudge', 'Before the due time', 'bell'),
+          stepper('repeatMinutes', 'Then repeat every', 'Until the task is done or snoozed', 'refresh-cw'),
+          stepper('mergeAheadMinutes', 'Group tasks due within', 'Added to a nudge that goes out anyway', 'layers'))),
+      h('div', {}, cardTitle(ctx, 'moon', 'Quiet hours'),
+        h('div', { class: 'card' },
+          h('label', { class: 'setting', for: 'q-enabled' }, h('span', { class: 'icon-chip' }, icon('moon', 'sm')),
+            h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, 'Pause nudges at night'), h('span', { class: 'li-sub' }, qh.enabled ? `${hhmm12(qh.start)} to ${hhmm12(qh.end)} IST, they resume after` : 'Off: nudges continue around the clock')),
+            toggle),
+          qh.enabled && time('start', 'Starts', 'moon'),
+          qh.enabled && time('end', 'Ends', 'sunrise'),
+          errors.quietHours && h('p', { class: 'error-text card-pad' }, errors.quietHours))),
+      h('div', {}, cardTitle(ctx, 'flask-conical', 'Test a nudge'),
+        h('div', { class: 'card card-pad stack' },
+          h('p', { class: 'muted' }, 'See the exact WhatsApp message a person would get right now, then send it as a test.'),
+          field(ctx, 'Person', tester, { id: 'test-person' }), testBox)),
+      errors._form && h('div', { class: 'callout danger', role: 'alert' }, icon('alert-triangle'), h('span', {}, errors._form)),
+      h('div', { class: 'save-bar' }, dirtyText, resetBtn, saveBtn));
+    drawTest();
     upd();
   };
-  async function save() {
+  saveBtn.addEventListener('click', async () => {
     errors = {};
+    saveBtn.disabled = true;
     try {
-      const saved = await api('PUT', '/api/task-settings', st);
-      Object.assign(st, saved, { quietHours: { ...saved.quietHours } });
+      const next = await api('PUT', '/api/task-settings', st);
+      Object.assign(st, next, { quietHours: { ...next.quietHours } });
+      saved = JSON.stringify(st);
       ctx.toast('Settings saved');
     } catch (e) {
-      errors = e.network ? { _form: 'You are offline. Admin changes need a connection.' } : { ...((e.body && e.body.fields) || {}), ...(e.body && e.body.fields ? {} : { _form: e.message }) };
+      errors = e.network ? { _form: errText(e) } : { ...((e.body && e.body.fields) || {}), ...(e.body && e.body.fields ? {} : { _form: e.message }) };
     }
     draw();
-  }
+  });
   draw();
 }
 
 // ---------- Audit ----------
 
 const AUDIT = {
-  person_create: ['plus', 'Added a person'], person_update: ['pencil', 'Edited a person'], person_deactivate: ['x', 'Deactivated a person'],
+  person_create: ['user-plus', 'Added a person'], person_update: ['pencil', 'Edited a person'], person_deactivate: ['x', 'Deactivated a person'],
   person_self_create: ['user', 'Created own task list'], person_self_repair: ['refresh-cw', 'Repaired own task list'],
-  person_test_nudge: ['send', 'Sent a test nudge'], access_grant_set: ['eye', 'Set access to a list'], access_grant_remove: ['trash-2', 'Removed access to a list'],
-  task_settings_update: ['bell', 'Changed notification settings'],
+  person_test_nudge: ['send', 'Sent a setup test'], person_test_digest: ['flask-conical', 'Sent a test nudge'],
+  access_grant_set: ['eye', 'Set access to a list'], access_grant_remove: ['trash-2', 'Removed access to a list'],
+  task_settings_update: ['bell-ring', 'Changed notification settings'],
 };
 
 async function renderAudit(ctx) {
   const { h, clear, icon, api, body } = ctx;
   const rows = await api('GET', '/api/nudge/audit');
   const now = Date.now();
-  if (!rows.length) { clear(body).append(h('div', { class: 'empty' }, icon('list-checks', 'xl'), h('h2', {}, 'Nothing here yet'), h('p', {}, 'Changes to people, access and settings will show up here.'))); return; }
+  if (!rows.length) { fill(body, h('div', { class: 'empty' }, h('div', { class: 'icon-wrap' }, icon('history', 'xl')), h('h2', {}, 'Nothing here yet'), h('p', {}, 'Changes to people, access and settings will show up here.'))); return; }
   const detail = (d) => (d && typeof d === 'object' ? Object.entries(d).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v) : String(v)]) : []);
-  clear(body).append(h('ul', { class: 'audit-list', id: 'audit-list' }, rows.map((r) => {
+  fill(body, h('div', { class: 'card', id: 'audit-list' }, rows.map((r) => {
     const [ic, label] = AUDIT[r.action] || ['info', r.action];
     const ms = Date.parse(r.at);
-    const box = h('dl', { class: 'kv audit-details', hidden: true }, detail(r.details).flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]));
-    const btn = h('button', { type: 'button', class: 'link-btn small', 'aria-expanded': 'false', onclick: () => {
-      box.hidden = !box.hidden;
-      btn.setAttribute('aria-expanded', String(!box.hidden));
-      btn.textContent = box.hidden ? 'Details' : 'Hide details';
-    } }, 'Details');
-    return h('li', { class: 'audit-row' },
-      h('span', { class: 'audit-icon' }, icon(ic, 'sm')),
-      h('div', { class: 'audit-main' },
-        h('div', { class: 'audit-label' }, label),
-        h('div', { class: 'small muted' }, `${r.actor} · ${fmtRelative(ms, now)} · ${fmtDateTime(ms, now)} IST`),
-        btn, box));
+    const box = h('dl', { class: 'audit-details' }, detail(r.details).flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]));
+    const pad = h('div', { class: 'card-pad audit-pad', hidden: true }, box);
+    const chev = h('span', {}, icon('chevron-down', 'sm'));
+    const btn = h('button', { type: 'button', class: 'list-item two clickable', 'aria-expanded': 'false', onclick: () => {
+      pad.hidden = !pad.hidden;
+      btn.setAttribute('aria-expanded', String(!pad.hidden));
+      fill(chev, icon(pad.hidden ? 'chevron-down' : 'chevron-up', 'sm'));
+    } },
+    h('span', { class: 'icon-chip' }, icon(ic, 'sm')),
+    h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, label), h('span', { class: 'li-sub' }, `${r.actor} · ${fmtRelative(ms, now)} · ${fmtDateTime(ms, now)}`)),
+    h('span', { class: 'li-trail' }, chev));
+    return h('div', { class: 'audit-row' }, btn, pad);
   })));
 }

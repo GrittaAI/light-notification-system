@@ -149,7 +149,7 @@ export async function startTasksService(env: Env, deps: TasksDeps): Promise<Serv
 
   const healthServer = startNudgeHealthServer(whatsapp, tracker, env.TASKS_HEALTH_PORT);
   const nudgeServer = startNudgeServer(
-    { db, env, mailer, whatsapp, appName: env.APP_NAME, verifyIdToken: deps.verifyIdToken },
+    { db, env, mailer, whatsapp, appName: env.APP_NAME, verifyIdToken: deps.verifyIdToken, ...(env.TASKS_PUBLIC_URL && { publicUrl: env.TASKS_PUBLIC_URL }) },
     env.TASKS_PORT,
     env.TASKS_HOST,
   );
