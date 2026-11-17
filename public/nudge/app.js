@@ -586,6 +586,29 @@ function micHelp() {
   return 'In Chrome: click the icon left of the address (lock or sliders) → Microphone → Allow, then reload the page. Also check that your computer allows the browser to use the microphone.';
 }
 
+/**
+ * Speech recognition said "not-allowed". Tell apart a real block (the site has no microphone permission) from the
+ * speech service refusing (Android: the Google app, which does the speech-to-text, lacks microphone permission).
+ */
+async function diagnoseMic() {
+  const android = /Android/.test(navigator.userAgent);
+  let micOk = null;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((t) => t.stop());
+    micOk = true;
+  } catch (e) {
+    micOk = e && e.name === 'NotAllowedError' ? false : null;
+  }
+  if (micOk === true) {
+    return android
+      ? 'Chrome can use the microphone, but Android’s speech service cannot. Open Android Settings → Apps → Google → Permissions → Microphone → Allow, and make sure Google voice typing is turned on (Settings → System → Languages & input). Then try again. (code: not-allowed, mic ok)'
+      : 'The browser can use the microphone, but its speech service refused. Check the browser’s voice / speech settings, then try again. (code: not-allowed, mic ok)';
+  }
+  if (micOk === false) return `Microphone access is blocked for this site, so the browser will not ask again. ${micHelp()} (code: not-allowed, mic blocked)`;
+  return `Voice input was refused. ${micHelp()} (code: not-allowed)`;
+}
+
 function voiceSheet() {
   if (!voiceSupported || S.ownerId === null || !canEditOwner(S.ownerId)) return;
   const content = h('div', { class: 'voice' });
@@ -723,7 +746,8 @@ function voiceSheet() {
       if (ev.error === 'no-speech' || ev.error === 'aborted') return; // a pause: onend restarts
       if (ev.error === 'not-allowed' && sessions > 1) { pause(); return; } // a restart without a tap was refused: not a real block
       if (ev.error === 'not-allowed') {
-        showError(`Microphone access is blocked for this site, so the browser will not ask again. ${micHelp()} (code: not-allowed)`);
+        showError('Checking the microphone…');
+        diagnoseMic().then((m) => { if (state === 'error') status.textContent = m; });
         return;
       }
       const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
