@@ -751,7 +751,7 @@ function renderAll(soft) {
     else { clear(view.detail); taskPage = null; }
   }
 }
-window.addEventListener('hashchange', () => { if (S.me && S.active) renderAll(false); });
+window.addEventListener('hashchange', () => { if (closeSheet) closeSheet(); if (S.me && S.active) renderAll(false); });
 for (const mq of [mqExpanded, mqLarge]) mq.addEventListener('change', () => { if (S.me && S.active) { view.shellKey = null; renderAll(false); } });
 
 function buildShell() {

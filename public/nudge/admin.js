@@ -49,6 +49,30 @@ function field(ctx, label, control, { error, help, id } = {}) {
     help && h('p', { class: 'small muted' }, help),
     error && h('p', { class: 'error-text', role: 'alert' }, error));
 }
+/**
+ * A Material "select": a field-styled button showing the current choice; tapping opens a sheet with a radio list.
+ * Replaces native <select> (whose popup is drawn by the OS, off-theme and oddly placed on phones). Use on pages only:
+ * inside another sheet it would replace that sheet.
+ */
+function pickerField(ctx, { id, label, value, options, onChange, disabled, title }) {
+  const { h, icon } = ctx;
+  const current = () => options.find((o) => o.value === value);
+  const btn = h('button', { type: 'button', class: 'input picker-field', id, disabled, 'aria-haspopup': 'dialog', 'aria-label': `${label}: ${current() ? current().label : 'none'}` },
+    current() && current().lead, h('span', { class: 'pf-text' }, current() ? current().label : 'Choose…'), icon('chevron-down', 'sm'));
+  btn.addEventListener('click', () => {
+    const c = h('div', {});
+    const close = ctx.openSheet(c, { label: title || label });
+    c.append(...ctx.sheetHead(title || label),
+      h('div', { class: 'list', role: 'radiogroup', 'aria-label': label }, options.map((o) => ctx.listItem({
+        lead: o.lead, head: o.label, sub: o.sub, trail: o.value === value ? icon('check', 'sm') : null,
+        attrs: { role: 'radio', 'aria-checked': String(o.value === value) },
+        onclick: () => { close(); if (o.value !== value) onChange(o.value); },
+      }))));
+  });
+  return btn;
+}
+const personOption = (ctx, p, me) => ({ value: p.id, label: p.name + (p.id === me ? ' (me)' : ''), sub: p.email, lead: ctx.h('span', { class: 'avatar sm' }, initials(p.name)) });
+
 const cardTitle = (ctx, ic, text, extra) => ctx.h('div', { class: 'block-label' }, ctx.icon(ic, 'sm'), text, extra && ctx.h('span', { class: 'spacer' }), extra);
 
 async function loadGroups(ctx, refresh) {
@@ -274,10 +298,12 @@ function personSheet(ctx, person, settings, onDone) {
     email.value = st.email;
     const wa = h('input', { id: 'p-wa', class: 'input', type: 'tel', inputmode: 'tel', placeholder: '919812345678', oninput: (ev) => { st.whatsapp = ev.target.value; } });
     wa.value = st.whatsapp;
-    const role = h('select', { id: 'p-role', class: 'input', disabled: ownerRow || adminRow, onchange: (ev) => { st.role = ev.target.value; } },
-      h('option', { value: 'member' }, 'Member'),
-      h('option', { value: 'admin', disabled: !actorSuper }, actorSuper ? 'Admin' : 'Admin (only the owner can grant this)'));
-    role.value = st.role;
+    const role = h('div', { class: 'seg', id: 'p-role', role: 'radiogroup', 'aria-label': 'Role' },
+      [['member', 'Member', 'user'], ['admin', 'Admin', 'shield']].map(([v, l, ic]) => h('button', {
+        type: 'button', role: 'radio', 'aria-checked': String(st.role === v), 'data-v': v,
+        disabled: ownerRow || adminRow || (v === 'admin' && !actorSuper && st.role !== 'admin'),
+        onclick: () => { st.role = v; draw(); },
+      }, icon(ic, 'xs'), l)));
     const seg = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Where nudges go' },
       [['default', 'Team group', 'users'], ['group', 'Other group', 'message-circle'], ['dm', 'Direct', 'user']].map(([v, l, ic]) =>
         h('button', { type: 'button', role: 'radio', 'aria-checked': String(st.target === v), 'data-v': v, onclick: () => { st.target = v; draw(); } }, icon(ic, 'xs'), l)));
@@ -288,7 +314,7 @@ function personSheet(ctx, person, settings, onDone) {
         field(ctx, 'Name', name, { error: err.name, id: 'p-name' }),
         field(ctx, 'Email', email, { error: err.email, id: 'p-email', help: adminRow ? "Only the owner can change an admin's email." : null }),
         field(ctx, 'WhatsApp number', wa, { error: err.whatsapp, id: 'p-wa', help: 'With country code, e.g. 919812345678. Needed to be tagged in a group or to get a direct message.' }),
-        field(ctx, 'Role', role, { error: err.role, id: 'p-role', help: actorSuper ? 'Admins can manage people, access and settings.' : 'Only the owner can make someone an admin.' }),
+        field(ctx, 'Role', role, { error: err.role, help: actorSuper ? 'Admins can manage people, access and settings.' : 'Only the owner can make someone an admin.' }),
         h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Nudges go to'), seg,
           st.target === 'default' && h('p', { class: 'small muted' }, settings.defaultGroupId ? `The team group${groupName(settings.defaultGroupId) ? ` (${groupName(settings.defaultGroupId)})` : ''}, tagging them.` : 'No team group is set yet (Admin → Notifications).'),
           st.target === 'dm' && h('p', { class: 'small muted' }, 'A direct WhatsApp message to their number.'),
@@ -338,6 +364,7 @@ async function renderAccess(ctx) {
   const active = people.filter((p) => p.active);
   const isSuper = S.me.role === 'superadmin';
   let selected = active.find((p) => p.id === S.me.personId) || active[0];
+  let addPick = null;
   const view = h('div', { class: 'stack' });
   const reload = async () => { grants = await api('GET', '/api/access-grants'); draw(); };
   const act = async (fn, okText) => {
@@ -354,13 +381,12 @@ async function renderAccess(ctx) {
     const iSee = grants.filter((g) => g.granteePersonId === selected.id);
     const already = new Set(seeMine.map((g) => g.granteePersonId));
     const candidates = active.filter((p) => p.id !== selected.id && !already.has(p.id));
-    let addWho = candidates[0] ? candidates[0].id : null;
+    let addWho = candidates.some((p) => p.id === addPick) ? addPick : candidates[0] ? candidates[0].id : null;
     let addLevel = 'view';
-    const picker = h('select', { class: 'input', id: 'access-person', 'aria-label': 'Person', onchange: (ev) => { selected = active.find((p) => p.id === Number(ev.target.value)); draw(); } },
-      active.map((p) => h('option', { value: p.id }, p.name + (p.id === S.me.personId ? ' (me)' : ''))));
-    picker.value = String(selected.id);
-    const addSel = h('select', { class: 'input', id: 'access-add-person', 'aria-label': 'Give access to', disabled: lockedList || !candidates.length, onchange: (ev) => { addWho = Number(ev.target.value); } },
-      candidates.map((p) => h('option', { value: p.id }, p.name)));
+    const picker = pickerField(ctx, { id: 'access-person', label: 'Whose list', title: 'Whose list?', value: selected.id,
+      options: active.map((p) => personOption(ctx, p, S.me.personId)), onChange: (v) => { selected = active.find((p) => p.id === v); draw(); } });
+    const addSel = pickerField(ctx, { id: 'access-add-person', label: 'Person', title: 'Give access to', value: addWho, disabled: lockedList || !candidates.length,
+      options: candidates.map((p) => personOption(ctx, p, S.me.personId)), onChange: (v) => { addWho = v; addPick = v; draw(); } });
     const addSeg = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'New access level' },
       [['view', 'Can view', 'eye'], ['edit', 'Can edit', 'pencil']].map(([v, l, ic]) => h('button', { type: 'button', role: 'radio', 'aria-checked': String(addLevel === v), disabled: lockedList, onclick: (ev) => {
         addLevel = v;
@@ -471,14 +497,14 @@ async function renderNotifications(ctx) {
     const time = (key, label, ic) => {
       const input = h('input', { id: 'q-' + key, class: 'input time-input', type: 'time', 'aria-label': `${label} (IST)`, oninput: (ev) => { qh[key] = ev.target.value; upd(); } });
       input.value = qh[key];
-      return h('div', { class: 'setting' }, h('span', { class: 'icon-chip' }, icon(ic, 'sm')), h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, label), h('span', { class: 'li-sub' }, 'IST')), input);
+      return h('label', { class: 'setting time-row', for: 'q-' + key }, h('span', { class: 'icon-chip' }, icon(ic, 'sm')), h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, label)), input);
     };
     const gName = st.defaultGroupId ? (groupName(st.defaultGroupId) || st.defaultGroupId) : null;
-    const tester = h('select', { class: 'input', id: 'test-person', 'aria-label': 'Person to test', onchange: (ev) => { testPerson = Number(ev.target.value); drawTest(); } },
-      people.filter((p) => p.active).map((p) => h('option', { value: p.id }, p.name + (p.id === ctx.S.me.personId ? ' (me)' : ''))));
-    if (testPerson) tester.value = String(testPerson);
-    const testBox = h('div', {});
-    const drawTest = () => fill(testBox, testPerson ? nudgePreviewBlock(ctx, { personId: testPerson, label: 'Preview their nudge' }) : h('p', { class: 'muted' }, 'Add a person first.'));
+    const testBox = h('div', { class: 'stack' });
+    const drawTest = () => fill(testBox,
+      field(ctx, 'Person', pickerField(ctx, { id: 'test-person', label: 'Person', title: 'Test whose nudge?', value: testPerson,
+        options: people.filter((p) => p.active).map((p) => personOption(ctx, p, ctx.S.me.personId)), onChange: (v) => { testPerson = v; drawTest(); } }), { id: 'test-person' }),
+      testPerson ? nudgePreviewBlock(ctx, { personId: testPerson, label: 'Preview their nudge' }) : h('p', { class: 'muted' }, 'Add a person first.'));
     fill(body, 
       h('div', { class: 'callout info' }, icon('bell-ring'), preview),
       h('div', {}, cardTitle(ctx, 'send', 'Delivery'),
@@ -498,13 +524,13 @@ async function renderNotifications(ctx) {
           h('label', { class: 'setting', for: 'q-enabled' }, h('span', { class: 'icon-chip' }, icon('moon', 'sm')),
             h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, 'Pause nudges at night'), h('span', { class: 'li-sub' }, qh.enabled ? `${hhmm12(qh.start)} to ${hhmm12(qh.end)} IST, they resume after` : 'Off: nudges continue around the clock')),
             toggle),
-          qh.enabled && time('start', 'Starts', 'moon'),
-          qh.enabled && time('end', 'Ends', 'sunrise'),
+          qh.enabled && time('start', 'Starts (IST)', 'moon'),
+          qh.enabled && time('end', 'Ends (IST)', 'sunrise'),
           errors.quietHours && h('p', { class: 'error-text card-pad' }, errors.quietHours))),
       h('div', {}, cardTitle(ctx, 'flask-conical', 'Test a nudge'),
         h('div', { class: 'card card-pad stack' },
           h('p', { class: 'muted' }, 'See the exact WhatsApp message a person would get right now, then send it as a test.'),
-          field(ctx, 'Person', tester, { id: 'test-person' }), testBox)),
+          testBox)),
       errors._form && h('div', { class: 'callout danger', role: 'alert' }, icon('alert-triangle'), h('span', {}, errors._form)),
       h('div', { class: 'save-bar' }, dirtyText, resetBtn, saveBtn));
     drawTest();
