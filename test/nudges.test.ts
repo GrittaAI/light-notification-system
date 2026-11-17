@@ -12,10 +12,9 @@ const MIN = 60_000;
 const BASE = Date.parse('2026-11-16T06:00:00.000Z'); // 11:30 IST
 const at = (min: number) => new Date(BASE + min * MIN);
 const GROUP = '120363000000000001@g.us';
-const URL_ = 'https://nudge.example.com';
 const NUM = '919876543210';
 
-const settings = (o: Partial<TaskSettings> & { publicUrl?: string } = {}) => ({ ...DEFAULT_TASK_SETTINGS, defaultGroupId: GROUP, ...o });
+const settings = (o: Partial<TaskSettings> & { appName?: string } = {}) => ({ ...DEFAULT_TASK_SETTINGS, defaultGroupId: GROUP, ...o });
 
 const person = (o: Partial<PersonRow> = {}): PersonRow => ({
   id: 1, email: 'ann@example.com', name: 'Ann', whatsapp: NUM, role: 'member', active: true, notifyTarget: 'default',
@@ -84,7 +83,7 @@ describe('computeDigests: look-ahead merge', () => {
     const [d] = run(at(0), [far, edge, soon, now]);
     expect(d!.taskIds).toEqual([now.id, soon.id, edge.id]);
     expect(d!.newTaskIds).toEqual([now.id, soon.id, edge.id]);
-    expect(d!.message).toContain('3. edge: due in 15 min');
+    expect(d!.message).toContain('*3. edge*\n_Due in 15 min, at');
   });
 
   it('never causes a digest by itself and never delays one', () => {
@@ -110,7 +109,7 @@ describe('computeDigests: look-ahead merge', () => {
 
   it('a single nudgeable task plus one merged task is a multi-task message', () => {
     const [d] = run(at(0), [due(5, { title: 'A' }), due(14, { title: 'B' })]);
-    expect(d!.message.split('\n')[0]).toBe(`📋 2 pending tasks, @${NUM}`);
+    expect(d!.message.split('\n')[0]).toBe(`*Reminder: 2 pending tasks* @${NUM}`);
   });
 });
 
@@ -152,7 +151,7 @@ describe('computeDigests: targets', () => {
   it('default: the default group, tagging the owner by number', () => {
     const [d] = run(at(0), [task()]);
     expect(d!.target).toEqual({ type: 'group', chatId: GROUP, mentions: [NUM] });
-    expect(d!.message.split('\n')[0]).toBe(`📝 Task due in 10 min, @${NUM}`);
+    expect(d!.message.split('\n')[0]).toBe(`*Reminder: task due in 10 min* @${NUM}`);
   });
 
   it('group override uses notify_group_id, still tagging the owner', () => {
@@ -161,10 +160,10 @@ describe('computeDigests: targets', () => {
     expect(d!.target).toEqual({ type: 'group', chatId: g, mentions: [NUM] });
   });
 
-  it('dm: <whatsapp>@c.us, no mention, name instead of @number', () => {
+  it('dm: <whatsapp>@c.us, no mention and no tag in the text', () => {
     const [d] = run(at(0), [task()], { people: [person({ notifyTarget: 'dm' })], settings: settings({ defaultGroupId: null }) });
     expect(d!.target).toEqual({ type: 'dm', chatId: `${NUM}@c.us`, mentions: [] });
-    expect(d!.message.split('\n')[0]).toBe('📝 Task due in 10 min, Ann');
+    expect(d!.message.split('\n')[0]).toBe('*Reminder: task due in 10 min*');
     expect(d!.message).not.toContain('@');
   });
 
@@ -186,57 +185,44 @@ describe('computeDigests: message format', () => {
   const NOW = new Date('2026-11-16T11:20:00.000Z'); // 4:50 PM IST
   const dueIn = (min: number, o: Partial<TaskRow> = {}) => task({ dueAt: new Date(NOW.getTime() + min * MIN).toISOString(), ...o });
 
-  it('single task, due soon, with the link', () => {
-    const t = dueIn(10);
-    const [d] = run(NOW, [t], { settings: settings({ publicUrl: URL_ }) });
-    expect(d!.message).toBe(`📝 Task due in 10 min, @${NUM}\nPrepare deck  (due 5:00 PM)\nOpen: ${URL_}/#/t/${t.id}`);
+  it('single task, due soon: bold title, italic due line, footer, no link', () => {
+    const [d] = run(NOW, [dueIn(10)], { settings: settings({ appName: 'Nudge' }) });
+    expect(d!.message).toBe(`*Reminder: task due in 10 min* @${NUM}\n\n*Prepare deck*\n_Due in 10 min, at 5:00 PM_\n\n_Mark done or snooze in the Nudge app._`);
   });
 
   it('single task overdue', () => {
     const t = dueIn(-25, { firstAlertSentAt: 'x' });
-    const [d] = computeDigests(NOW, [person()], new Map([[1, [t]]]), new Map([[1, { nextDigestAt: NOW.toISOString(), lastDigestAt: null }]]), settings({ publicUrl: URL_ }));
-    expect(d!.message).toBe(`📝 Task overdue by 25 min, @${NUM}\nPrepare deck  (due 4:25 PM)\nOpen: ${URL_}/#/t/${t.id}`);
+    const [d] = computeDigests(NOW, [person()], new Map([[1, [t]]]), new Map([[1, { nextDigestAt: NOW.toISOString(), lastDigestAt: null }]]), settings());
+    expect(d!.message).toBe(`*Reminder: task overdue by 25 min* @${NUM}\n\n*Prepare deck*\n_Overdue by 25 min (was due 4:25 PM)_\n\n_Mark done or snooze in the Pushup Nudge app._`);
   });
 
-  it('several tasks: numbered list, warning on overdue, per-task links when n <= 5, then the manage link', () => {
+  it('several tasks: numbered bold titles, overdue first, footer with the app name', () => {
     const a = dueIn(-25, { title: 'Send proposal', firstAlertSentAt: 'x' });
     const b = dueIn(5, { title: 'Call Ravi' });
-    const [d] = run(NOW, [b, a], { settings: settings({ publicUrl: URL_ }) });
+    const [d] = run(NOW, [b, a], { settings: settings({ appName: 'Tasks' }) });
     expect(d!.message).toBe([
-      `📋 2 pending tasks, @${NUM}`,
-      '1. ⚠️ Send proposal: overdue by 25 min',
-      `   Open: ${URL_}/#/t/${a.id}`,
-      '2. Call Ravi: due in 5 min',
-      `   Open: ${URL_}/#/t/${b.id}`,
-      `Manage: ${URL_}/#/my`,
+      `*Reminder: 2 pending tasks* @${NUM}`, '',
+      '*1. Send proposal*', '_Overdue by 25 min (was due 4:25 PM)_', '',
+      '*2. Call Ravi*', '_Due in 5 min, at 4:55 PM_', '',
+      '_Mark done or snooze in the Tasks app._',
     ].join('\n'));
   });
 
-  it('more than 5 tasks: only the manage link; more than 20: capped with "+ k more"', () => {
-    const six = Array.from({ length: 6 }, (_, i) => dueIn(i + 1, { title: `T${i}` }));
-    const m6 = run(NOW, six, { settings: settings({ publicUrl: URL_ }) })[0]!.message;
-    expect(m6).not.toContain('Open:');
-    expect(m6.endsWith(`Manage: ${URL_}/#/my`)).toBe(true);
+  it('more than 20 tasks: capped with "+ k more"; never any link', () => {
     const many = Array.from({ length: 25 }, (_, i) => dueIn(i % 9, { title: `T${i}` }));
-    const [d] = run(NOW, many, { settings: settings({ publicUrl: URL_ }) });
+    const [d] = run(NOW, many);
     expect(d!.taskIds).toHaveLength(25);
     const lines = d!.message.split('\n');
-    expect(lines[0]).toBe(`📋 25 pending tasks, @${NUM}`);
-    expect(lines.filter((l) => /^\d+\. /.test(l))).toHaveLength(20);
+    expect(lines[0]).toBe(`*Reminder: 25 pending tasks* @${NUM}`);
+    expect(lines.filter((l) => /^\*\d+\. /.test(l))).toHaveLength(20);
     expect(lines).toContain('+ 5 more');
-  });
-
-  it('carries no links when the public URL is not set', () => {
-    const single = run(NOW, [dueIn(10)])[0]!.message;
-    expect(single).toBe(`📝 Task due in 10 min, @${NUM}\nPrepare deck  (due 5:00 PM)`);
-    const multi = run(NOW, [dueIn(5), dueIn(6)])[0]!.message;
-    expect(multi).not.toMatch(/Open:|Manage:|http/);
+    expect(d!.message).not.toMatch(/http|Open:|Manage:/);
   });
 
   it('a multi-line title stays on one line; the DM version uses the name', () => {
     const [d] = run(NOW, [dueIn(5, { title: 'one\ntwo' }), dueIn(6)], { people: [person({ notifyTarget: 'dm' })] });
-    expect(d!.message).toContain('1. one two: due in 5 min');
-    expect(d!.message.split('\n')[0]).toBe('📋 2 pending tasks, Ann');
+    expect(d!.message).toContain('*1. one two*\n_Due in 5 min');
+    expect(d!.message.split('\n')[0]).toBe('*Reminder: 2 pending tasks*');
   });
 });
 
@@ -265,7 +251,7 @@ function world(opts: { whatsapp?: string | null; target?: 'default' | 'group' | 
     saveTask(db, id, { title, dueAt: at(dueMin).toISOString() } as any, { email: 'ann@example.com', personId: who }, at(-200).toISOString());
     return id;
   };
-  const tick = (min: number) => { clock = at(min); return runTaskNudges(db, { whatsapp, publicUrl: URL_, warned }, clock); };
+  const tick = (min: number) => { clock = at(min); return runTaskNudges(db, { whatsapp, warned }, clock); };
   return { db, ann, sent, whatsapp, create, tick, setFailing: (f: boolean) => { failing = f; }, warned };
 }
 
@@ -331,7 +317,7 @@ describe('runTaskNudges', () => {
       if (w.sent.length > before) minutes.push(m);
     }
     expect(minutes).toEqual([0, 10, 20, 30, 40]);
-    expect(w.sent[2]!.text).toMatch(/overdue by 10 min/);
+    expect(w.sent[2]!.text).toMatch(/Overdue by 10 min/);
   });
 
   const batch = async (w: ReturnType<typeof world>, upTo: number) => {
@@ -340,7 +326,7 @@ describe('runTaskNudges', () => {
     for (let m = 0; m <= upTo; m++) {
       const before = w.sent.length;
       await w.tick(m);
-      if (w.sent.length > before) log.push({ m, n: w.sent.at(-1)!.text.split('\n').filter((l) => /^\d+\. /.test(l)).length || 1 });
+      if (w.sent.length > before) log.push({ m, n: w.sent.at(-1)!.text.split('\n').filter((l) => /^\*\d+\. /.test(l)).length || 1 });
     }
     return { ids, log };
   };
@@ -350,12 +336,12 @@ describe('runTaskNudges', () => {
     const { ids, log } = await batch(w, 106);
     expect(log).toEqual([{ m: 82, n: 3 }, { m: 92, n: 3 }, { m: 102, n: 3 }]);
     // the first digest already lists all three as "due in N min" and marks all three alerted
-    expect(w.sent[0]!.text).toContain('1. C: due in 10 min');
-    expect(w.sent[0]!.text).toContain('2. B: due in 11 min');
-    expect(w.sent[0]!.text).toContain('3. A: due in 13 min');
+    expect(w.sent[0]!.text).toContain('*1. C*\n_Due in 10 min');
+    expect(w.sent[0]!.text).toContain('*2. B*\n_Due in 11 min');
+    expect(w.sent[0]!.text).toContain('*3. A*\n_Due in 13 min');
     expect(w.sent[0]!.text).not.toContain('⚠️');
     expect(col(w.db, ids[2]!, 'first_alert_sent_at')).toBe(at(82).toISOString());
-    expect(w.sent.at(-1)!.text).toContain('⚠️ C: overdue by 10 min');
+    expect(w.sent.at(-1)!.text).toContain('*1. C*\n_Overdue by 10 min');
     expect(w.db.prepare(`SELECT COUNT(*) n FROM task_digests`).get()).toEqual({ n: 3 });
   });
 
@@ -365,7 +351,7 @@ describe('runTaskNudges', () => {
     const { log } = await batch(w, 106);
     expect(log.slice(0, 3)).toEqual([{ m: 82, n: 1 }, { m: 83, n: 2 }, { m: 85, n: 3 }]);
     expect(log.slice(3)).toEqual([{ m: 95, n: 3 }, { m: 105, n: 3 }]);
-    expect(w.sent.at(-1)!.text).toContain('⚠️ C: overdue by 13 min');
+    expect(w.sent.at(-1)!.text).toContain('*1. C*\n_Overdue by 13 min');
   });
 
   it('snoozed tasks are left out, and alert again when the snooze expires', async () => {
@@ -413,7 +399,7 @@ describe('runTaskNudges', () => {
     w.create('Prepare deck', 10);
     await w.tick(0);
     expect(w.sent[0]).toMatchObject({ to: `${NUM}@c.us`, mentions: [] });
-    expect(w.sent[0]!.text.split('\n')[0]).toBe('📝 Task due in 10 min, Ann');
+    expect(w.sent[0]!.text.split('\n')[0]).toBe('*Reminder: task due in 10 min*');
   });
 
   it('skips an owner with no usable target and warns at most once per hour', async () => {
@@ -449,7 +435,7 @@ describe('runTaskNudges', () => {
         return w.whatsapp.sendGroupMessage(g, t, m);
       },
     };
-    const r = await runTaskNudges(w.db, { whatsapp, publicUrl: URL_, warned: w.warned }, at(0));
+    const r = await runTaskNudges(w.db, { whatsapp, warned: w.warned }, at(0));
     expect(r).toMatchObject({ digests: 2, sent: 1, failed: 1 });
     expect(w.sent).toHaveLength(1);
   });

@@ -21,7 +21,7 @@ afterEach(async () => { for (const h of handles.splice(0)) await h.stop(); });
 
 const baseEnv = {
   SUPERADMIN_EMAIL: SUPER, ADMIN_PASSWORD: PASSWORD, ADMIN_COOKIE_SECURE: false, ADMIN_TRUST_PROXY: false,
-  HEALTH_PORT: 0, ADMIN_PORT: 0, ADMIN_HOST: '127.0.0.1', TASKS_PORT: 0, TASKS_HOST: '127.0.0.1', TASKS_HEALTH_PORT: 0, APP_NAME: 'Nudge',
+  HEALTH_PORT: 0, ADMIN_PORT: 0, ADMIN_HOST: '127.0.0.1', TASKS_PORT: 0, TASKS_HOST: '127.0.0.1', TASKS_HEALTH_PORT: 0, APP_NAME: 'Pushup Nudge',
 } as any;
 
 function mocks() {
@@ -144,7 +144,7 @@ describe('role-aware env validation', () => {
     const tasks = envSchema.safeParse({ ...base, SERVICE_ROLE: 'tasks' });
     expect(tasks.success).toBe(true);
     if (tasks.success) {
-      expect(tasks.data).toMatchObject({ APP_NAME: 'Nudge', TASKS_PORT: 8082, TASKS_HOST: '127.0.0.1', TASKS_HEALTH_PORT: 8083 });
+      expect(tasks.data).toMatchObject({ APP_NAME: 'Pushup Nudge', TASKS_PORT: 8082, TASKS_HOST: '127.0.0.1', TASKS_HEALTH_PORT: 8083 });
       expect(tasks.data.TASKS_PUBLIC_URL).toBeUndefined();
     }
   });

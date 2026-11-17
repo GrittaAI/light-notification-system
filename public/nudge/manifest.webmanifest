@@ -1,7 +1,7 @@
 {
-  "name": "Nudge",
-  "short_name": "Nudge",
-  "description": "Your tasks, with a nudge on WhatsApp when they are due.",
+  "name": "Pushup Nudge",
+  "short_name": "Pushup Nudge",
+  "description": "Pushup Nudge by Gritta AI: your tasks, with a nudge on WhatsApp when they are due.",
   "id": "/",
   "start_url": "/",
   "scope": "/",

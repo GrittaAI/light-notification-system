@@ -71,7 +71,7 @@ export interface AuthDeps {
   /** Which product this auth serves (default 'reminders'). Only 'tasks' accepts members and email codes. */
   product?: Product;
   mailer?: Mailer;
-  /** Product name used in the sign-in email (default "Nudge"). */
+  /** Product name used in the sign-in email (default "Pushup Nudge"). */
   appName?: string;
 }
 
@@ -115,7 +115,7 @@ export function createAuth(deps: AuthDeps) {
   const product: Product = deps.product ?? 'reminders';
   const cookieName = COOKIE_NAMES[product];
   const allowMembers = product === 'tasks';
-  const appName = deps.appName ?? 'Nudge';
+  const appName = deps.appName ?? 'Pushup Nudge';
   const now = deps.now ?? (() => new Date());
   const verifyIdToken = deps.verifyIdToken ?? verifyGoogleIdToken;
   const failures = new Map<string, { count: number; resetAt: number }>();

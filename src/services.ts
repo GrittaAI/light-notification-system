@@ -149,13 +149,13 @@ export async function startTasksService(env: Env, deps: TasksDeps): Promise<Serv
 
   const healthServer = startNudgeHealthServer(whatsapp, tracker, env.TASKS_HEALTH_PORT);
   const nudgeServer = startNudgeServer(
-    { db, env, mailer, whatsapp, appName: env.APP_NAME, verifyIdToken: deps.verifyIdToken, ...(env.TASKS_PUBLIC_URL && { publicUrl: env.TASKS_PUBLIC_URL }) },
+    { db, env, mailer, whatsapp, appName: env.APP_NAME, verifyIdToken: deps.verifyIdToken },
     env.TASKS_PORT,
     env.TASKS_HOST,
   );
 
   const nudges = guarded('task-nudges', async () => {
-    const result = await runTaskNudges(db, { whatsapp, publicUrl: env.TASKS_PUBLIC_URL });
+    const result = await runTaskNudges(db, { whatsapp, appName: env.APP_NAME });
     tracker.lastRunAt = new Date();
     tracker.lastRunOk = result.ok;
   });

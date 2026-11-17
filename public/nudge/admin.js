@@ -49,6 +49,12 @@ function field(ctx, label, control, { error, help, id } = {}) {
     help && h('p', { class: 'small muted' }, help),
     error && h('p', { class: 'error-text', role: 'alert' }, error));
 }
+/** WhatsApp *bold* and _italic_ as DOM nodes (text only, never HTML), so the preview reads like the real chat. */
+function waFormat(h, text) {
+  return text.split(/(\*[^*\n]+\*|_[^_\n]+_)/).filter(Boolean).map((part) =>
+    /^\*[^*\n]+\*$/.test(part) ? h('strong', {}, part.slice(1, -1))
+      : /^_[^_\n]+_$/.test(part) ? h('em', {}, part.slice(1, -1)) : part);
+}
 /**
  * A Material "select": a field-styled button showing the current choice; tapping opens a sheet with a radio list.
  * Replaces native <select> (whose popup is drawn by the OS, off-theme and oddly placed on phones). Use on pages only:
@@ -193,7 +199,7 @@ export function nudgePreviewBlock(ctx, { personId, label }) {
       r.mode === 'upcoming' && h('p', { class: 'small muted' }, 'Nothing is due right now, so this shows upcoming tasks in the real format.'),
       h('div', { class: 'wa-chat' },
         h('div', { class: 'wa-to' }, icon(r.target.type === 'dm' ? 'user' : 'users', 'xs'), `To: ${to}`),
-        h('div', { class: 'wa-bubble' }, h('span', {}, `🧪 [TEST]\n\n${r.message}`), h('span', { class: 'wa-time' }, fmtTime(Date.now())))),
+        h('div', { class: 'wa-bubble' }, h('span', {}, waFormat(h, `🧪 [TEST]\n\n${r.message}`)), h('span', { class: 'wa-time' }, fmtTime(Date.now())))),
       h('p', { class: 'small muted' }, 'Sent marked [TEST]. Real nudge timing does not change. One test per person every 30 seconds.'),
       h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn text', onclick: load }, icon('refresh-cw'), 'Refresh'), h('span', { class: 'spacer' }), send));
   }

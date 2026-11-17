@@ -505,3 +505,6 @@ button.setting, label.setting { width: 100%; text-align: left; cursor: pointer; 
 .setting.time-row { flex-wrap: nowrap; min-height: 64px; }
 .setting.time-row .li-body { min-width: 0; flex: 1 1 auto; }
 .setting.time-row .time-input { width: 136px; flex: none; min-height: 44px; padding: 8px 10px; font-size: 15px; }
+.by-line { font-size: 12px; line-height: 16px; letter-spacing: .4px; color: var(--on-surface-variant); }
+.brand .by-line { margin-top: -6px; }
+.brand-text { display: flex; flex-direction: column; min-width: 0; }

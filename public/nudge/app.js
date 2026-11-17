@@ -579,7 +579,7 @@ async function renderSignIn(message) {
   const msg = h('div', { class: 'stack' });
   const body = h('div', { class: 'stack' });
   const card = h('div', { class: 'login-card' },
-    h('div', { class: 'brand' }, h('div', { class: 'logo' }, icon('bell')), h('h1', {}, 'Nudge'),
+    h('div', { class: 'brand' }, h('div', { class: 'logo' }, icon('bell')), h('h1', {}, 'Pushup Nudge'), h('span', { class: 'by-line' }, 'by Gritta AI'),
       h('p', { class: 'muted' }, 'Your tasks, with a WhatsApp nudge when they are due.')),
     msg, body);
   $app.append(h('main', { class: 'login-page' }, card));
@@ -771,7 +771,7 @@ function buildShell() {
   // navigation drawer (expanded layouts)
   view.drawerLists = h('div', { class: 'stack-0' });
   view.drawer = h('nav', { class: 'drawer', 'aria-label': 'Navigation' },
-    h('div', { class: 'brand-row' }, h('div', { class: 'logo' }, icon('bell')), h('span', { class: 'title-l' }, 'Nudge')),
+    h('div', { class: 'brand-row' }, h('div', { class: 'logo' }, icon('bell')), h('span', { class: 'brand-text' }, h('span', { class: 'title-l' }, 'Pushup Nudge'), h('span', { class: 'by-line' }, 'by Gritta AI'))),
     h('button', { type: 'button', class: 'fab', id: 'fab-new-drawer', onclick: newTaskSheet }, icon('plus'), h('span', {}, 'New task')),
     h('div', { class: 'nav-label' }, 'Lists'), view.drawerLists,
     h('div', { class: 'sheet-divider' }),
@@ -978,7 +978,7 @@ function renderHomeList() {
   }
   if (S.me.role === 'superadmin' && S.me.personId === null) {
     box.append(h('div', { class: 'empty' }, h('div', { class: 'icon-wrap' }, icon('list-checks', 'xl')), h('h2', {}, 'Create your task list'),
-      h('p', {}, 'You manage Nudge as the owner. Create your own list to add tasks and get nudges too.'),
+      h('p', {}, 'You manage Pushup Nudge as the owner. Create your own list to add tasks and get nudges too.'),
       h('button', { type: 'button', class: 'btn', id: 'create-self', onclick: createSelf }, icon('plus'), 'Create my task list')));
     if (S.ownerId === null) return;
   }
@@ -1327,7 +1327,7 @@ function registerWorker() {
   let reloading = false;
   const hadController = !!navigator.serviceWorker.controller; // first install claims the page: that must not reload it
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloading) { reloading = true; location.reload(); } });
-  const offer = (worker) => toast('A new version of Nudge is ready', {
+  const offer = (worker) => toast('A new version of Pushup Nudge is ready', {
     timeout: 0, action: { label: 'Refresh', fn: () => worker.postMessage({ type: 'SKIP_WAITING' }) },
   });
   navigator.serviceWorker.register('/sw.js').then((reg) => {
@@ -1366,7 +1366,7 @@ function goInactive() {
   setBackgroundInert(false);
   view.app = null;
   clear($app).append(h('main', { class: 'login-page' }, h('div', { class: 'login-card center' },
-    h('div', { class: 'brand' }, h('div', { class: 'logo' }, icon('bell')), h('h1', {}, 'Nudge')),
+    h('div', { class: 'brand' }, h('div', { class: 'logo' }, icon('bell')), h('h1', {}, 'Pushup Nudge')),
     h('h2', { class: 'title-l' }, 'Nudge is open in another tab'),
     h('p', { class: 'muted' }, 'To keep your changes safe, Nudge runs in one tab at a time.'),
     h('button', { type: 'button', class: 'btn big block', id: 'use-here', onclick: () => {

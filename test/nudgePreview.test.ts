@@ -58,7 +58,7 @@ describe('GET /api/app/nudge-preview', () => {
     expect(r.json.mode).toBe('due');
     expect(r.json.target).toEqual({ type: 'group', chatId: GROUP });
     expect(r.json.taskCount).toBe(2);
-    expect(r.json.message).toContain('📋 2 pending tasks, @919811111111');
+    expect(r.json.message).toContain('*Reminder: 2 pending tasks* @919811111111');
     expect(r.json.message.indexOf('Call Ravi')).toBeLessThan(r.json.message.indexOf('Send invoice')); // overdue first
     const after = await t.request('GET', '/api/app/tasks', { cookie: annC });
     expect(after.json.tasks.every((x: { firstAlertSentAt?: unknown }) => !x.firstAlertSentAt)).toBe(true);

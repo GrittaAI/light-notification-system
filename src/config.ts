@@ -109,7 +109,7 @@ export const envSchema = z
   // Which product this process runs: the call reminders (default) or Nudge (tasks). See README "Nudge".
   SERVICE_ROLE: z.enum(['reminders', 'tasks']).default('reminders'),
   // Nudge
-  APP_NAME: z.string().trim().min(1).default('Nudge'),
+  APP_NAME: z.string().trim().min(1).default('Pushup Nudge'),
   TASKS_PORT: z.coerce.number().int().positive().default(8082),
   TASKS_HOST: z.string().min(1).default('127.0.0.1'),
   TASKS_HEALTH_PORT: z.coerce.number().int().positive().default(8083),

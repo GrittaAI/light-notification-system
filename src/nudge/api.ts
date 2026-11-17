@@ -28,8 +28,6 @@ export interface NudgeApiDeps {
   /** WAHA client for the groups list and test nudges. Without it those endpoints answer 503. */
   whatsapp?: Pick<WhatsApp, 'sendGroupMessage' | 'sendDirectMessage' | 'listGroups'>;
   appName?: string;
-  /** TASKS_PUBLIC_URL (no trailing slash), so previews carry the same links as real nudges. */
-  publicUrl?: string;
 }
 
 const ok = (body: unknown, status = 200): ApiResult => ({ status, body });
@@ -167,7 +165,7 @@ export function createNudgeApi(deps: NudgeApiDeps) {
   }
 
   function previewFor(p: PersonRow) {
-    const settings = { ...getTaskSettings(db), ...(deps.publicUrl && { publicUrl: deps.publicUrl }) };
+    const settings = { ...getTaskSettings(db), ...(deps.appName && { appName: deps.appName }) };
     const tasks = listTasks(db, [p.id], undefined);
     return previewDigest(p, tasks, clock(), settings);
   }
@@ -194,7 +192,7 @@ export function createNudgeApi(deps: NudgeApiDeps) {
     const last = lastTestNudge.get(p.id);
     if (last !== undefined && nowMs - last < TEST_NUDGE_COOLDOWN_MS) throw new HttpError(429, 'Wait a few seconds before sending another test');
     lastTestNudge.set(p.id, nowMs);
-    const text = `🧪 [TEST] Preview of a ${deps.appName ?? 'Nudge'} reminder, nothing is due because of this message.\n\n${r.message}`;
+    const text = `🧪 [TEST] Preview of a ${deps.appName ?? 'Pushup Nudge'} reminder, nothing is due because of this message.\n\n${r.message}`;
     try {
       if (r.target.type === 'dm') await whatsapp.sendDirectMessage(r.target.chatId, text);
       else await whatsapp.sendGroupMessage(r.target.chatId, text, r.target.mentions);
@@ -254,7 +252,7 @@ export function createNudgeApi(deps: NudgeApiDeps) {
       const resolved = targetFor(p, getTaskSettings(db));
       if ('skip' in resolved) throw new HttpError(409, `no usable nudge target: ${resolved.skip}`);
       const t = resolved.target;
-      const text = `✅ Test nudge from ${deps.appName ?? 'Nudge'}: notifications for ${p.name} are set up correctly.`;
+      const text = `✅ Test nudge from ${deps.appName ?? 'Pushup Nudge'}: notifications for ${p.name} are set up correctly.`;
       const whatsapp = wa();
       const nowMs = clock().getTime();
       const last = lastTestNudge.get(p.id);

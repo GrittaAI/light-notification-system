@@ -11,15 +11,13 @@ import { type TaskDbRow, type TaskRow, toTask } from './store.js';
 const log = logger.child({ module: 'task-nudges' });
 
 export const MAX_LISTED = 20;
-/** Per-task "Open" links are included only up to this many tasks in a digest. */
-export const MAX_TASKS_WITH_LINKS = 5;
 export const WARN_EVERY_MS = 3600_000;
 const IST_OFFSET_MIN = 330;
 
 export interface NudgeState { nextDigestAt: string | null; lastDigestAt: string | null }
 
-/** Settings plus the public base URL used for links (unset: messages carry no links). */
-export type DigestSettings = TaskSettings & { publicUrl?: string };
+/** Settings plus the product name used in the message footer (default "Pushup Nudge"). */
+export type DigestSettings = TaskSettings & { appName?: string };
 
 export interface DigestTarget {
   type: 'group' | 'dm';
@@ -61,26 +59,31 @@ export function relativeDue(dueIso: string, now: Date): string {
 
 const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
 
-function buildMessage(tasks: TaskRow[], now: Date, who: string, publicUrl: string | undefined): string {
-  const link = (path: string) => (publicUrl ? `${publicUrl}/#/${path}` : undefined);
+/** "Due in 5 min, at 12:05 PM", "Overdue by 20 min (was due 11:40 AM)" or "Due now, at 12:05 PM". */
+function dueLine(dueIso: string, now: Date): string {
+  const rel = relativeDue(dueIso, now);
+  const at = istTime(dueIso);
+  if (rel.startsWith('overdue')) return `Overdue${rel.slice('overdue'.length)} (was due ${at})`;
+  return `${rel[0]!.toUpperCase()}${rel.slice(1)}, at ${at}`;
+}
+
+/**
+ * WhatsApp text: bold header, one bold title + italic due line per task, and a closing hint. No links, so WhatsApp
+ * shows no preview card and the tasks stay the focus. `who` is "@number" in a group, empty in a DM.
+ */
+function buildMessage(tasks: TaskRow[], now: Date, who: string, appName: string): string {
+  const tag = who ? ` ${who}` : '';
+  const footer = `_Mark done or snooze in the ${appName} app._`;
   if (tasks.length === 1) {
     const t = tasks[0]!;
-    const lines = [`📝 Task ${relativeDue(t.dueAt!, now)}, ${who}`, `${oneLine(t.title)}  (due ${istTime(t.dueAt!)})`];
-    const open = link(`t/${t.id}`);
-    if (open) lines.push(`Open: ${open}`);
-    return lines.join('\n');
+    return [`*Reminder: task ${relativeDue(t.dueAt!, now)}*${tag}`, '', `*${oneLine(t.title)}*`, `_${dueLine(t.dueAt!, now)}_`, '', footer].join('\n');
   }
-  const lines = [`📋 ${tasks.length} pending tasks, ${who}`];
-  const withLinks = tasks.length <= MAX_TASKS_WITH_LINKS;
+  const lines = [`*Reminder: ${tasks.length} pending tasks*${tag}`];
   tasks.slice(0, MAX_LISTED).forEach((t, i) => {
-    const overdue = Date.parse(t.dueAt!) <= now.getTime();
-    lines.push(`${i + 1}. ${overdue ? '⚠️ ' : ''}${oneLine(t.title)}: ${relativeDue(t.dueAt!, now)}`);
-    const open = withLinks ? link(`t/${t.id}`) : undefined;
-    if (open) lines.push(`   Open: ${open}`);
+    lines.push('', `*${i + 1}. ${oneLine(t.title)}*`, `_${dueLine(t.dueAt!, now)}_`);
   });
-  if (tasks.length > MAX_LISTED) lines.push(`+ ${tasks.length - MAX_LISTED} more`);
-  const manage = link('my');
-  if (manage) lines.push(`Manage: ${manage}`);
+  if (tasks.length > MAX_LISTED) lines.push('', `+ ${tasks.length - MAX_LISTED} more`);
+  lines.push('', footer);
   return lines.join('\n');
 }
 
@@ -110,7 +113,7 @@ export function isNudgeable(t: TaskRow, now: Date, leadMinutes: number): boolean
 export function targetFor(p: PersonRow, s: DigestSettings): { target: DigestTarget; who: string } | { skip: string } {
   const number = p.whatsapp;
   if (p.notifyTarget === 'dm') {
-    return number ? { target: { type: 'dm', chatId: `${number}@c.us`, mentions: [] }, who: p.name } : { skip: 'no whatsapp number for a direct message' };
+    return number ? { target: { type: 'dm', chatId: `${number}@c.us`, mentions: [] }, who: '' } : { skip: 'no whatsapp number for a direct message' };
   }
   const chatId = p.notifyTarget === 'group' ? p.notifyGroupId : s.defaultGroupId;
   if (!chatId) return { skip: p.notifyTarget === 'group' ? 'no group id set for this person' : 'no default group set' };
@@ -158,7 +161,7 @@ export function computeDigests(
       taskIds: listed.map((t) => t.id),
       newTaskIds: listed.filter((t) => t.firstAlertSentAt === null).map((t) => t.id),
       target: resolved.target,
-      message: buildMessage(listed, now, resolved.who, settings.publicUrl),
+      message: buildMessage(listed, now, resolved.who, settings.appName ?? 'Pushup Nudge'),
     });
   }
   return out;
@@ -191,15 +194,15 @@ export function previewDigest(person: PersonRow, tasks: readonly TaskRow[], now:
     listed = tasks.filter((t) => t.status !== 'done' && t.deletedAt === null && t.dueAt !== null).sort(byDue);
   }
   if (listed.length === 0) return { ok: false, reason: 'no_tasks' };
-  return { ok: true, mode, target: resolved.target, message: buildMessage(listed, now, resolved.who, settings.publicUrl), taskIds: listed.map((t) => t.id) };
+  return { ok: true, mode, target: resolved.target, message: buildMessage(listed, now, resolved.who, settings.appName ?? 'Pushup Nudge'), taskIds: listed.map((t) => t.id) };
 }
 
 // ---------- the job ----------
 
 export interface NudgeDeps {
   whatsapp: Pick<WhatsApp, 'sendGroupMessage' | 'sendDirectMessage'>;
-  /** TASKS_PUBLIC_URL, without a trailing slash. */
-  publicUrl?: string;
+  /** Product name for the message footer (APP_NAME). */
+  appName?: string;
   /** When each owner was last warned about a missing target (so the warning is logged at most hourly). */
   warned?: Map<number, number>;
 }
@@ -216,7 +219,7 @@ const defaultWarned = new Map<number, number>();
 export async function runTaskNudges(db: DB, deps: NudgeDeps, now: Date = new Date()): Promise<NudgeRunResult> {
   const result: NudgeRunResult = { digests: 0, sent: 0, failed: 0, ok: true };
   try {
-    const settings: DigestSettings = { ...getTaskSettings(db), ...(deps.publicUrl && { publicUrl: deps.publicUrl }) };
+    const settings: DigestSettings = { ...getTaskSettings(db), ...(deps.appName && { appName: deps.appName }) };
     const people = (db.prepare(`SELECT * FROM people WHERE active = 1 ORDER BY id`).all() as PersonDbRow[]).map(toPerson);
     const tasksByOwner = new Map<number, TaskRow[]>();
     const rows = db
