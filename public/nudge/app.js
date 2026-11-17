@@ -4,7 +4,7 @@
 import * as idb from './idb.js';
 import { renderAdminPage, renderNudgeSettingsPage } from './admin.js';
 import {
-  applyActionLocal, applyPushed, checklistProgress, diffOutbox, dueChip, enqueue, mergeOutbox, newOwnerIds, fmtDateTime, fmtRelative, fmtTime, groupTasks,
+  applyActionLocal, applyPushed, calendarMonth, checklistProgress, DAY_MS, dayKey, dayKeyStart, fmtDayKey, shiftMonth, tasksOnDay, diffOutbox, dueChip, enqueue, mergeOutbox, newOwnerIds, fmtDateTime, fmtRelative, fmtTime, groupTasks,
   isoToIstInput, isSnoozed, istAt, istInputToIso, istParts, mergePull, newTask, pendingTaskIds, pruneInvisible, pushOutbox, putBody,
   reconcileOutbox, toastReplaces, MAX_CHECKLIST,
 } from './sync-core.js';
@@ -118,6 +118,7 @@ const S = {
   me: null, tasks: new Map(), owners: [], outbox: [], meta: {}, ownerId: null,
   online: navigator.onLine, syncing: false, syncAgain: false, loaded: false, forceFull: false, storageOk: true,
   showDone: false, active: true, epoch: 0, wiping: false,
+  homeView: store.get('nudge.view') === 'calendar' ? 'calendar' : 'list', cal: null, // 'list' | 'calendar'; cal = { year, month, sel: 'YYYY-MM-DD' } (IST)
 };
 let writeChain = Promise.resolve();
 function persist(changes) {
@@ -498,9 +499,9 @@ function taskActions(taskId) {
       listItem({ lead: icon('trash-2'), head: 'Delete', cls: 'danger', onclick: () => confirmDelete(taskId) })));
 }
 
-function newTaskSheet() {
+function newTaskSheet(opts) {
   if (S.ownerId === null || !canEditOwner(S.ownerId)) return;
-  const st = { due: null, priority: 'medium' };
+  const st = { due: opts && opts.dueIso ? { key: 'pick', iso: opts.dueIso } : null, priority: 'medium' };
   const content = h('div', {});
   const close = openSheet(content, { label: 'New task', keepOpen: true });
   const title = h('textarea', { class: 'title-input', id: 'nt-title', rows: '1', maxlength: '200', placeholder: 'What needs doing?', 'aria-label': 'Task title', 'data-autofocus': true });
@@ -918,10 +919,85 @@ function renderHome() {
   clear(view.content);
   view.content.className = 'content';
   const viewOnly = S.ownerId !== null && !canEditOwner(S.ownerId);
+  const viewSwitch = S.ownerId !== null && h('div', { class: 'view-switch' },
+    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'View' },
+      [['list', 'List', 'list-checks'], ['calendar', 'Calendar', 'calendar-days']].map(([v, l, ic]) => h('button', {
+        type: 'button', role: 'radio', 'aria-checked': String(S.homeView === v), 'data-view': v,
+        onclick: () => { if (S.homeView === v) return; S.homeView = v; store.set('nudge.view', v); renderHome(); },
+      }, icon(ic, 'xs'), l))));
   view.content.append(h('div', { class: 'list-pane' },
     viewOnly && h('div', { class: 'pad' }, h('div', { class: 'callout info' }, icon('eye'), h('span', {}, 'View only. You can read this list but not change it.'))),
+    viewSwitch,
     h('div', { id: 'home-list' })));
   renderHomeList();
+}
+
+// ---------- calendar view ----------
+const WEEKDAY_LETTERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+
+/** Month grid (IST) with a dot on days that have tasks, and the selected day's tasks below it. */
+function renderCalendar(box) {
+  const now = nowMs();
+  const todayKey = dayKey(now);
+  if (!S.cal) { const p = istParts(now); S.cal = { year: p.year, month: p.month, sel: todayKey }; }
+  const tasks = ownerTasks();
+  const m = calendarMonth(S.cal.year, S.cal.month, tasks, now);
+  const redraw = (focus) => {
+    renderHomeList();
+    if (focus) { const el = document.querySelector('.cal-day[aria-pressed="true"]'); if (el) el.focus(); }
+  };
+  const go = (d) => { const n = shiftMonth(S.cal.year, S.cal.month, d); S.cal.year = n.year; S.cal.month = n.month; redraw(false); };
+  const select = (key, focus) => {
+    const [y, mo] = key.split('-').map(Number);
+    S.cal = { year: y, month: mo, sel: key };
+    redraw(focus);
+  };
+  const moveBy = (days) => select(dayKey(dayKeyStart(S.cal.sel) + days * DAY_MS + 12 * 3_600_000), true);
+  const grid = h('div', { class: 'cal-grid', role: 'group', 'aria-label': `${m.label}, choose a day`,
+    onkeydown: (ev) => {
+      const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[ev.key];
+      if (step) { ev.preventDefault(); moveBy(step); }
+    } },
+  m.weeks.flat().map((c) => {
+    const n = c.open + c.overdue + c.done;
+    const dot = c.overdue ? 'overdue' : c.open ? 'open' : c.done ? 'done' : null;
+    const label = `${fmtDayKey(c.key)}${c.today ? ', today' : ''}${n ? `, ${n} task${n > 1 ? 's' : ''}${c.overdue ? `, ${c.overdue} overdue` : ''}` : ', no tasks'}`;
+    return h('button', {
+      type: 'button', class: 'cal-day' + (c.inMonth ? '' : ' out') + (c.today ? ' today' : '') + (c.past ? ' past' : ''),
+      'aria-pressed': String(c.key === S.cal.sel), 'aria-label': label, tabindex: c.key === S.cal.sel ? '0' : '-1',
+      onclick: () => select(c.key, true),
+    }, h('span', { class: 'cal-num' }, String(c.day)), dot ? h('span', { class: 'cal-dot ' + dot, 'aria-hidden': 'true' }) : h('span', { class: 'cal-dot none', 'aria-hidden': 'true' }));
+  }));
+  const dayTasks = tasksOnDay(tasks, S.cal.sel);
+  const editable = canEditOwner(S.ownerId);
+  const canAddHere = editable && S.cal.sel >= todayKey;
+  const addForDay = () => newTaskSheet(S.cal.sel > todayKey ? { dueIso: new Date(dayKeyStart(S.cal.sel) + 9 * 3_600_000).toISOString() } : undefined);
+  const undated = tasks.filter((t) => !t.deleted && !t.dueAt && t.status !== 'done').length;
+  const dayTitle = S.cal.sel === todayKey ? `Today · ${fmtDayKey(S.cal.sel)}` : fmtDayKey(S.cal.sel);
+  box.append(
+    h('div', { class: 'cal' },
+      h('div', { class: 'cal-head' },
+        h('h2', { class: 'cal-title', 'aria-live': 'polite' }, m.label),
+        h('span', { class: 'spacer' }),
+        S.cal.sel !== todayKey || S.cal.month !== istParts(now).month || S.cal.year !== istParts(now).year ? h('button', { type: 'button', class: 'btn text', id: 'cal-today', onclick: () => select(todayKey, true) }, 'Today') : null,
+        h('button', { type: 'button', class: 'icon-btn', id: 'cal-prev', 'aria-label': 'Previous month', onclick: () => go(-1) }, icon('chevron-left')),
+        h('button', { type: 'button', class: 'icon-btn', id: 'cal-next', 'aria-label': 'Next month', onclick: () => go(1) }, icon('chevron-right'))),
+      h('div', { class: 'cal-grid cal-weekdays', 'aria-hidden': 'true' }, WEEKDAY_LETTERS.map((d) => h('span', {}, d))),
+      grid,
+      h('div', { class: 'cal-legend', 'aria-hidden': 'true' },
+        h('span', {}, h('span', { class: 'cal-dot open' }), 'Due'), h('span', {}, h('span', { class: 'cal-dot overdue' }), 'Overdue'), h('span', {}, h('span', { class: 'cal-dot done' }), 'Done'))),
+    h('section', { 'aria-label': dayTitle },
+      h('h2', { class: 'subhead' }, dayTitle, h('span', { class: 'count' }, String(dayTasks.length || ''))),
+      dayTasks.length
+        ? h('ul', { class: 'list' }, dayTasks.map((t) => taskRow(t)))
+        : h('div', { class: 'cal-empty' }, h('p', { class: 'muted' }, 'Nothing due this day.'),
+          canAddHere && h('button', { type: 'button', class: 'btn tonal', id: 'cal-add', onclick: addForDay }, icon('plus'), 'Add a task')),
+      dayTasks.length > 0 && canAddHere && h('div', { class: 'cal-add-row' }, h('button', { type: 'button', class: 'btn text', id: 'cal-add', onclick: addForDay }, icon('plus'), 'Add a task on this day'))),
+    undated > 0 && h('p', { class: 'cal-note small muted' }, `${undated} open task${undated > 1 ? 's have' : ' has'} no date. `,
+      h('button', { type: 'button', class: 'link-btn', onclick: () => { S.homeView = 'list'; store.set('nudge.view', 'list'); renderHome(); } }, 'See them in List view')),
+    h('div', { class: 'cal-end', 'aria-hidden': 'true' }));
+  const sel = route().name === 'task' ? route().id : null;
+  if (sel) { const row = box.querySelector(`[data-id="${CSS.escape(sel)}"] .task`); if (row) row.classList.add('selected'); }
 }
 
 function section(key, title, tasks, cls, collapsible) {
@@ -948,6 +1024,7 @@ function renderHomeList() {
       h('button', { type: 'button', class: 'btn', id: 'create-self', onclick: createSelf }, icon('plus'), 'Create my task list')));
     if (S.ownerId === null) return;
   }
+  if (S.homeView === 'calendar' && S.ownerId !== null) { renderCalendar(box); return; }
   const g = groupTasks(ownerTasks(), nowMs());
   const activeCount = g.overdue.length + g.today.length + g.upcoming.length + g.none.length;
   if (S.ownerId !== null && activeCount === 0) {

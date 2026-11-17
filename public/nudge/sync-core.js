@@ -412,3 +412,70 @@ export function applyActionLocal(t, action, nowIso, minutes) {
     default: return t;
   }
 }
+
+// ---------- calendar ----------
+
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+/** The IST calendar day of an instant: "2026-11-17". */
+export function dayKey(ms) {
+  const p = istParts(ms);
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}`;
+}
+
+/** Start of an IST day key as epoch ms (midnight IST). */
+export function dayKeyStart(key) {
+  const [y, m, d] = key.split('-').map(Number);
+  return Date.UTC(y, m - 1, d) - IST_OFFSET_MS;
+}
+
+/** "Tue, 17 Nov" for a day key. */
+export function fmtDayKey(key) {
+  const [y, m, d] = key.split('-').map(Number);
+  return `${WEEKDAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}, ${d} ${MONTHS[m - 1]}`;
+}
+
+/**
+ * A month grid (weeks start on Sunday), in IST. Each cell: { key, day, inMonth, today, past, open, overdue, done }
+ * where open/overdue/done count the non-deleted tasks due that day. `month` is 1..12.
+ */
+export function calendarMonth(year, month, tasks, nowMs) {
+  const counts = new Map();
+  for (const t of tasks) {
+    if (t.deleted || !t.dueAt) continue;
+    const ms = Date.parse(t.dueAt);
+    if (Number.isNaN(ms)) continue;
+    const k = dayKey(ms);
+    const c = counts.get(k) || { open: 0, overdue: 0, done: 0 };
+    if (t.status === 'done') c.done++;
+    else if (ms < nowMs) c.overdue++;
+    else c.open++;
+    counts.set(k, c);
+  }
+  const todayKey = dayKey(nowMs);
+  const first = new Date(Date.UTC(year, month - 1, 1));
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const lead = first.getUTCDay();
+  const total = Math.ceil((lead + daysInMonth) / 7) * 7;
+  const weeks = [];
+  for (let i = 0; i < total; i++) {
+    const d = new Date(Date.UTC(year, month - 1, 1 - lead + i));
+    const key = `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+    const c = counts.get(key) || { open: 0, overdue: 0, done: 0 };
+    if (i % 7 === 0) weeks.push([]);
+    weeks[weeks.length - 1].push({ key, day: d.getUTCDate(), inMonth: d.getUTCMonth() === month - 1, today: key === todayKey, past: key < todayKey, ...c });
+  }
+  return { label: `${MONTH_NAMES[month - 1]} ${year}`, weeks };
+}
+
+/** Tasks due on an IST day: open ones first (by due time), then done ones. Deleted tasks never show. */
+export function tasksOnDay(tasks, key) {
+  return tasks.filter((t) => !t.deleted && t.dueAt && dayKey(Date.parse(t.dueAt)) === key)
+    .sort((a, b) => (a.status === 'done') - (b.status === 'done') || byDue(a, b));
+}
+
+/** The month after / before (month 1..12). */
+export const shiftMonth = (year, month, d) => {
+  const i = year * 12 + (month - 1) + d;
+  return { year: Math.floor(i / 12), month: (i % 12) + 1 };
+};
