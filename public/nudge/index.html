@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#c2410c" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1c1410" media="(prefers-color-scheme: dark)">
+  <meta name="description" content="Nudge: your tasks, with a WhatsApp nudge when they are due.">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Nudge">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>Nudge</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app"><p class="boot">Loading Nudge…</p></div>
+  <div id="sheet-root"></div>
+  <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+  <div id="alerts" class="toasts" role="alert"></div>
+  <noscript><p class="boot">Nudge needs JavaScript.</p></noscript>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

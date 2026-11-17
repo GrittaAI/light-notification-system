@@ -2,8 +2,10 @@
 // Every write is validated with zod, so a bad edit can never reach the running jobs.
 
 import { z } from 'zod';
+import { parseOrThrow, StoreError } from './store-errors.js';
 import { type Client, type Closer, clientSchema, closerSchema, ConfigError, loadConfig } from './config.js';
 import { type DB, getKv, setKv } from './db.js';
+import { roleOf as peopleRoleOf } from './people.js';
 import { logger } from './logger.js';
 
 const log = logger.child({ module: 'store' });
@@ -13,30 +15,7 @@ export const KEY_REMINDER_OFFSETS = 'reminder_offsets';
 /** kv flag: set once config.json was imported (or the tables already held data); the seed never runs again. */
 export const KV_CONFIG_SEEDED_AT = 'config_seeded_at';
 
-// ---------- errors the HTTP layer maps to status codes ----------
-
-export class StoreError extends Error {
-  constructor(
-    readonly kind: 'validation' | 'conflict' | 'not_found',
-    message: string,
-    readonly fields?: Record<string, string>,
-  ) {
-    super(message);
-    this.name = 'StoreError';
-  }
-}
-
-/** Parses with zod; on failure throws a StoreError('validation') with one message per field. */
-export function parseOrThrow<T extends z.ZodType>(schema: T, input: unknown): z.output<T> {
-  const result = schema.safeParse(input);
-  if (result.success) return result.data;
-  const fields: Record<string, string> = {};
-  for (const issue of result.error.issues) {
-    const key = issue.path.length ? String(issue.path[0]) : '_';
-    fields[key] ??= issue.message;
-  }
-  throw new StoreError('validation', 'validation failed', fields);
-}
+export { parseOrThrow, StoreError } from './store-errors.js';
 
 function isUniqueViolation(err: unknown): boolean {
   return (err as { code?: string })?.code === 'SQLITE_CONSTRAINT_UNIQUE' || (err as { code?: string })?.code === 'SQLITE_CONSTRAINT_PRIMARYKEY';
@@ -260,7 +239,7 @@ export function setOffsets(db: DB, input: unknown): { offsets: number[]; updated
   return { offsets, updatedAt };
 }
 
-// ---------- admin users ----------
+// ---------- admin users (backed by the people table; admin_users is no longer used) ----------
 
 export interface AdminRow {
   email: string;
@@ -269,35 +248,50 @@ export interface AdminRow {
   createdAt: string;
 }
 
-export function listAdmins(db: DB): AdminRow[] {
-  return (db.prepare(`SELECT email, role, added_by, created_at FROM admin_users ORDER BY email`).all() as
-    { email: string; role: 'admin'; added_by: string; created_at: string }[])
-    .map((r) => ({ email: r.email, role: r.role, addedBy: r.added_by, createdAt: r.created_at }));
+/** Active admins. `superadminEmail` (when given) is left out: the superadmin comes from the environment, not from this list. */
+export function listAdmins(db: DB, superadminEmail?: string): AdminRow[] {
+  const sup = superadminEmail?.trim().toLowerCase();
+  return (db.prepare(`SELECT email, created_at, added_by FROM people WHERE role = 'admin' AND active = 1 ORDER BY email`).all() as
+    { email: string; created_at: string; added_by: string | null }[])
+    .filter((r) => r.email.toLowerCase() !== sup)
+    .map((r) => ({ email: r.email, role: 'admin' as const, addedBy: r.added_by ?? '', createdAt: r.created_at }));
 }
 
 const adminEmail = z.string().trim().toLowerCase().pipe(z.email());
 
+/** Adds an admin: creates the person (name = email local part) or promotes/reactivates an existing one. */
 export function addAdmin(db: DB, input: unknown, addedBy: string, superadminEmail: string): AdminRow {
   const { email } = parseOrThrow(z.object({ email: adminEmail }), input);
   if (email === superadminEmail.toLowerCase()) {
     throw new StoreError('validation', 'the superadmin is always an admin', { email: 'is the superadmin' });
   }
-  try {
-    db.prepare(`INSERT INTO admin_users (email, role, added_by, created_at) VALUES (?, 'admin', ?, ?)`).run(email, addedBy, nowIso());
-  } catch (err) {
-    if (isUniqueViolation(err)) throw new StoreError('conflict', 'this admin already exists', { email: 'already exists' });
-    throw err;
-  }
+  const now = nowIso();
+  db.transaction(() => {
+    const existing = db.prepare(`SELECT role, active FROM people WHERE email = ?`).get(email) as { role: string; active: number } | undefined;
+    if (existing?.role === 'admin' && existing.active === 1) {
+      throw new StoreError('conflict', 'this admin already exists', { email: 'already exists' });
+    }
+    if (existing) {
+      db.prepare(`UPDATE people SET role = 'admin', active = 1, updated_at = ?, added_by = ? WHERE email = ?`).run(now, addedBy, email);
+      db.prepare(`DELETE FROM admin_sessions WHERE email = ?`).run(email);
+    } else {
+      db.prepare(
+        `INSERT INTO people (email, name, whatsapp, role, active, notify_target, notify_group_id, created_at, updated_at, added_by)
+         VALUES (?, ?, NULL, 'admin', 1, 'default', NULL, ?, ?, ?)`,
+      ).run(email, email.split('@')[0] || email, now, now, addedBy);
+    }
+  })();
   return listAdmins(db).find((a) => a.email === email)!;
 }
 
+/** Removing an admin demotes them to member (the person and any tasks stay) and signs them out. */
 export function removeAdmin(db: DB, emailInput: string, superadminEmail: string): string {
   const email = emailInput.trim().toLowerCase();
   if (email === superadminEmail.toLowerCase()) {
     throw new StoreError('validation', 'the superadmin cannot be removed', { email: 'is the superadmin' });
   }
   const removed = db.transaction(() => {
-    const info = db.prepare(`DELETE FROM admin_users WHERE email = ?`).run(email);
+    const info = db.prepare(`UPDATE people SET role = 'member', updated_at = ? WHERE email = ? AND role = 'admin' AND active = 1`).run(nowIso(), email);
     if (info.changes > 0) db.prepare(`DELETE FROM admin_sessions WHERE email = ?`).run(email);
     return info.changes > 0;
   })();
@@ -305,11 +299,10 @@ export function removeAdmin(db: DB, emailInput: string, superadminEmail: string)
   return email;
 }
 
-/** 'superadmin' for the env email, 'admin' for a stored admin, null for anyone else. */
+/** 'superadmin' for the env email, 'admin' for an active admin person, null for anyone else (members have no console access). */
 export function roleOf(db: DB, email: string, superadminEmail: string): 'superadmin' | 'admin' | null {
-  const e = email.toLowerCase();
-  if (e === superadminEmail.toLowerCase()) return 'superadmin';
-  return db.prepare(`SELECT 1 FROM admin_users WHERE email = ?`).get(e) ? 'admin' : null;
+  const role = peopleRoleOf(db, email, superadminEmail);
+  return role === 'member' ? null : role;
 }
 
 // ---------- audit log ----------
@@ -325,6 +318,15 @@ export interface AuditRow {
 export function addAudit(db: DB, actor: string, action: string, details: Record<string, unknown> = {}): void {
   db.prepare(`INSERT INTO audit_log (at, actor, action, details) VALUES (?, ?, ?, ?)`)
     .run(nowIso(), actor, action, JSON.stringify(details));
+}
+
+/** The last `limit` audit rows whose action belongs to Nudge (people, access, task settings); reminders-console and login rows are left out. */
+export function listNudgeAudit(db: DB, limit = 200): AuditRow[] {
+  return (db.prepare(
+    `SELECT id, at, actor, action, details FROM audit_log
+     WHERE action GLOB 'person_*' OR action GLOB 'access_grant_*' OR action GLOB 'task_settings*'
+     ORDER BY id DESC LIMIT ?`).all(limit) as { id: number; at: string; actor: string; action: string; details: string }[])
+    .map((r) => ({ ...r, details: JSON.parse(r.details) as unknown }));
 }
 
 export function listAudit(db: DB, limit = 100): AuditRow[] {

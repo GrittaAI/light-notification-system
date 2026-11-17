@@ -97,3 +97,66 @@ Format: decision. Reason.
 - Google's own GIS inline styles are blocked by our CSP (style-src without 'unsafe-inline'). Accepted for now: keeping the CSP strict matters more than pixel-perfect styling of the Google button. Revisit only if the button looks broken once GOOGLE_OAUTH_CLIENT_ID is configured.
 - Task 8 passed review round 2. Session status and QR endpoints verified live against the real WAHA (read-only: status WORKING, linked number shown, QR 409 while connected). Start/restart/logout/switch were deliberately never run against the real WAHA; they are verified against a mock only, so the first real number switch should be done by the user from the UI.
 - Deferred (non-blocking): move focus to #main after hash navigation; audit failed pairing-code requests; rate-limit pairing-code (superadmin-only, low risk).
+
+## Tasks product
+- Built into the same service (same SQLite, auth, WAHA, scheduler, audit, deploy) as a new module, not a separate app: one deploy, one WhatsApp link, shared security work.
+- Separate frontends: the employee PWA at /app (mobile-first, offline) and the existing admin console at /. Employees never need the admin console.
+- People directory: a new `people` table (email, name, whatsapp, role admin|member, active, notification target) replaces admin_users (migrated; superadmin still from env). Closers stay separate (sales domain).
+- Member login without passwords: a 6-digit email code via the existing SMTP (hashed, 10 min expiry, 5 attempts, rate-limited), plus Google Sign-In once GOOGLE_OAUTH_CLIENT_ID is set. Superadmin password login unchanged. Sessions: 30 days sliding for members (phone app), 12 h for admins/superadmin.
+- Access control: owner always has full access to their own list; admins/superadmin see and edit all; members see others only through explicit grants (grantee → owner, level view|edit) managed by admins. Every API call is checked server-side; the UI only hides.
+- Task fields: title, notes, status (todo|in_progress|done), priority (low|medium|high|urgent), due_at (UTC, optional: no due date = no nudges), checklist (JSON), snoozed_until, owner, created_by, timestamps, version, soft delete. Every change is written to task_activity.
+- Nudge rule (per owner): a task becomes "nudgeable" at due_at - lead (default 10 min) while not done, not deleted and not snoozed. A digest for an owner is sent when any task becomes nudgeable for the first time, or when the owner's repeat timer (default 10 min after the last digest) fires. A digest lists ALL of that owner's nudgeable tasks in one message (overdue first); with exactly one task it is a single-task message. This aligns tasks with different due times into one stream instead of separate pings.
+- Snoozing (1 h / 2 h / 24 h / custom) or changing the due date resets the task's first-alert flag, so it alerts again on time when it becomes nudgeable; done stops it for good; reopening re-arms it.
+- Where nudges go: an org default WhatsApp group set by an admin, tagging the owner; per person an admin can override with another group or a direct message to their number. Viewers with access are not nudged (MVP).
+- Actions from WhatsApp: each digest has a link per task (and a "manage all" link) to the PWA task page with Done / Snooze buttons; links require login (a group link must not let anyone else complete your task). Reply commands via webhook are Phase 4.
+- Quiet hours setting (default OFF): when enabled, no nudges in that window; they resume after it. Nagging every 10 min overnight is otherwise unavoidable.
+- Offline: client-generated UUIDs, IndexedDB cache, an outbox replayed when online, optimistic concurrency with a per-task version (409 returns the server copy; the PWA shows a conflict notice and keeps the server version for that field set). Nudges are server-side, so they work while a phone is offline.
+- Reliability: the task engine is its own guarded job and must never affect the call-reminder jobs; a digest's state is recorded only after WAHA accepts the message (retry next minute), so no duplicate or silently lost digests.
+- Risk accepted and flagged: WAHA is an unofficial WhatsApp client; frequent automated messages raise the chance WhatsApp restricts the number. Batching per person keeps volume down; a dedicated ops number is recommended.
+- No new runtime dependencies; vanilla JS PWA without a build step, consistent with the admin console.
+
+## Tasks product = separate product "Nudge" (user clarification 2026-11-17)
+- Name "Nudge" at nudge.grittaai.com (configurable APP_NAME / TASKS_PUBLIC_URL). The call-reminder product at reminders.grittaai.com must be unaffected.
+- Same codebase and Docker image, run as a SECOND container: SERVICE_ROLE=reminders (default, today's behaviour: sync, reminders, monitor, admin console on 8081) or SERVICE_ROLE=tasks (Nudge API + PWA + nudge job on 8082). A crash, bug or load in Nudge cannot stop call reminders, and each restarts independently.
+- One SQLite file on the shared app-data volume (shared people directory and superadmin); WAL + busy_timeout handle the two processes; every migration is idempotent and runs in an immediate transaction so simultaneous startups are safe. Each process runs only its own jobs.
+- Nudge serves its PWA at "/" of its own host, its own session cookie name (host-only), and its own admin area (people, access rules, task notification settings) inside Nudge. The reminders admin console keeps only its current features; task routes are not exposed there.
+- Shared notification layer: whatsapp.ts gains direct-message sending alongside group messages with mentions; Nudge uses it. Call reminders keep their current code path unchanged (no refactor of working, tested reminder logic).
+- Env validation is role-aware: the tasks role needs WAHA, SMTP, SUPERADMIN and session settings, but not the Google Calendar service account.
+- Supersedes the earlier "employee PWA at /app" and "Phase 3 admin in the admin console" decisions.
+- Nudge Phase 1 review round 1: two blocking privilege bugs (admin email change escalation; superadmin email managed as a person) sent back for fixing.
+- docker-compose pins SERVICE_ROLE=reminders on the app service, so a stray SERVICE_ROLE in the shared .env can never silently turn off call reminders.
+- "Remove admin" in the reminders console demotes the person to a Nudge member (they keep their task list); fully removing someone is "deactivate" in Nudge's People admin. Matches how employees are managed.
+- Look-ahead merge window for nudges: when a digest is sent anyway, it also includes tasks that become nudgeable within the next 5 minutes (setting tasks.merge_ahead_minutes, 0-15, default 5) and marks them alerted. Avoids separate first-alert pings minutes apart; errs toward alerting slightly early, never late.
+- Accepted as-is: a re-arm made during the seconds a digest is being sent can be absorbed (bounded by the repeat interval); a failed request may extend a member session without re-issuing the cookie (harmless).
+- For Phase 2: the PWA must drop cached tasks whose owner is no longer in /api/app/owners (grant revoked or task moved away).
+- The superadmin may have their own person row (own task list), created only by the superadmin themselves (self-service, e.g. on first Nudge sign-in or via People admin); ordinary admins can never create, edit, rename to, change the role of, or deactivate that row. Keeps the anti-takeover protection while letting the product owner use Nudge.
+- Nudge Phase 1 passed review round 2.
+- Access grants whose owner is the superadmin's own list can only be created or removed by the superadmin (privacy of the product owner's list); folded into Phase 3.
+- Also folded into Phase 3 (small backend items): audit the /self legacy-row repair as person_self_repair; hide the superadmin from the reminders console's Admins list.
+- Accepted: the merge window can end a snooze up to 5 minutes early (consistent with "early, never late").
+- Nudge shows all times in Asia/Kolkata (same as its WhatsApp messages), not the device timezone, so app and messages always agree.
+- Nudge PWA data on the device (IndexedDB) is cleared on logout; the service worker caches only the app shell, never API responses.
+- Nudge PWA: only one tab is active at a time (navigator.locks 'nudge-active'); a second tab shows "Nudge is open in another tab" with "Use here". Outbox writes are per entry (never clear-and-replace) and sync re-reads the outbox from IndexedDB under a 'nudge-sync' lock as defence in depth. Simplest robust protection against cross-tab loss and double pushes.
+- A replayed create (409 on the client's own UUID) is rebased only if the server copy is unchanged since creation (version 1) or already contains the edit; otherwise it is a normal conflict. Never overwrite another person's edit.
+- The service worker version is a content hash of the shell files injected by the Nudge server at startup; no manual bump.
+- Quick add rests as one ~60 px row (title, due button, priority, add); preset chips appear only while typing; "Pick…" opens a bottom sheet.
+- Accepted for now: action endpoints (done/reopen/snooze) carry no version, so a replay after a crash mid-push can override another user's later change of status; rare, idempotent, revisit if it shows up.
+- Manifest without an orientation lock (tablets usable in landscape).
+- Accepted: when "Use here" steals the active-tab lock during the old tab's push, the new tab may replay entries the old tab already applied (puts resolve as already-applied, actions are idempotent; a replayed snooze can extend slightly). Safe, rare, cheaper than cross-tab handshakes.
+- Quick-add row: due and priority controls are icon-only until set, so the title takes most of the width; "Pick…" comes first in the chips row.
+- Nudge Phase 2 entered round 3 (last allowed) for the stolen-tab bug; if round 3 fails, stop and report to the user.
+- Nudge Phase 2 passed final review (round 3). Small a11y polish (focus back on the priority button, radiogroup role, task title min-height 44 px) is folded into Phase 3.
+- Phase 3: Nudge admin lives inside the Nudge PWA (admin/superadmin only, mobile-first, desktop-friendly). The Nudge server gets its own admin-only WhatsApp groups endpoint (cached, same normalisation as the console) so admins pick groups by name; no cross-calls to the reminders service.
+- Phase 3 includes a "Send test nudge" action per person (sends a one-line test to that person's resolved target) so admins can verify routing before relying on it; audited.
+- Nudge Phase 3 review round 1: reactivating a deactivated admin is superadmin-only (was a privilege bug).
+- Group picker has a manual "Enter group ID" fallback (validated @g.us) when WAHA can't list groups, so routing can still be configured during a WhatsApp outage.
+- Test nudge has a 30 s cooldown per person (429) to prevent group spam; failures of test-nudge and groups listing are logged server-side (clear logs).
+- Form sheets (person edit, settings) never close on backdrop click; a nested confirm returns to the form on Cancel instead of discarding it.
+- One toast at a time (a new one replaces the previous); no toast when an inline field error is already shown.
+- User-facing validation messages are friendly (custom zod messages), never raw library wording.
+- Person-switcher chips are hidden on admin pages.
+- Toasts with an action (the "New version available" refresh prompt and the "Undo" toast) are never replaced by passive toasts; only passive toasts replace each other. Keeps the one-toast rule without losing update prompts or Undo.
+- Reminders console validation wording stays byte-identical (Nudge-specific type messages only on Nudge schemas).
+- Nudge Phase 3 entered round 3 (last allowed); if it fails, stop and report to the user.
+- Nudge Phase 3 passed final review (round 3). Shipping with one accepted cosmetic issue: when an update prompt, an Undo and an error toast coincide, the error can briefly overlap the update prompt (prompt never lost; queued as polish, PLAN 14).
+- Before deploying new code to production, take an online SQLite backup (better-sqlite3 .backup()) inside the app container; no service stop needed, so no reminder is put at risk.

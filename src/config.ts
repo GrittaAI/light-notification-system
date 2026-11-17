@@ -3,16 +3,24 @@ import { z } from 'zod';
 
 // ---------- config.json (first-start import only; no secrets here) ----------
 
+// International number, digits only (a leading "+" and spaces/dashes are stripped).
+// e.g. "+91 98765-43210" -> "919876543210"
+/**
+ * A WhatsApp number (international format, digits only after cleaning) with a caller-chosen error message.
+ * `typeMessage` (Nudge only) also replaces zod's wording for a missing or non-string value; without it the base is a plain
+ * z.string(), so the reminders console's messages stay exactly as they were.
+ */
+export const whatsappSchemaWith = (message: string, typeMessage?: string) => z
+  .string(typeMessage ? { error: typeMessage } : undefined)
+  .transform((s) => s.replace(/[\s\-()]/g, '').replace(/^\+/, ''))
+  .pipe(z.string().regex(/^[1-9]\d{7,14}$/, message));
+export const whatsappSchema = whatsappSchemaWith('must be an international number with country code');
+
 export const closerSchema = z.object({
   name: z.string().trim().min(1),
   // Stored lowercase so attendee matching is case-insensitive.
   email: z.string().trim().toLowerCase().pipe(z.email()),
-  // International number, digits only (a leading "+" and spaces/dashes are stripped).
-  // e.g. "+91 98765-43210" -> "919876543210"
-  whatsapp: z
-    .string()
-    .transform((s) => s.replace(/[\s\-()]/g, '').replace(/^\+/, ''))
-    .pipe(z.string().regex(/^[1-9]\d{7,14}$/, 'must be an international number with country code')),
+  whatsapp: whatsappSchema,
 });
 
 export const clientSchema = z.object({
@@ -98,6 +106,17 @@ export const envSchema = z
   ADMIN_HOST: z.string().min(1).default('127.0.0.1'),
   ADMIN_COOKIE_SECURE: boolString,
   ADMIN_TRUST_PROXY: boolString,
+  // Which product this process runs: the call reminders (default) or Nudge (tasks). See README "Nudge".
+  SERVICE_ROLE: z.enum(['reminders', 'tasks']).default('reminders'),
+  // Nudge
+  APP_NAME: z.string().trim().min(1).default('Nudge'),
+  TASKS_PORT: z.coerce.number().int().positive().default(8082),
+  TASKS_HOST: z.string().min(1).default('127.0.0.1'),
+  TASKS_HEALTH_PORT: z.coerce.number().int().positive().default(8083),
+  // Public base URL of Nudge (e.g. https://nudge.grittaai.com) used for links in WhatsApp messages. Unset: no links.
+  TASKS_PUBLIC_URL: optionalString
+    .refine((v) => v === undefined || /^https?:\/\/[^\s/]+/i.test(v.trim()), 'must be an http(s) URL')
+    .transform((v) => v?.trim().replace(/\/+$/, '')),
   })
   .superRefine((env, ctx) => {
     if (!env.ADMIN_PASSWORD && !env.GOOGLE_OAUTH_CLIENT_ID) {
@@ -107,6 +126,8 @@ export const envSchema = z
         message: 'set at least one admin login method: ADMIN_PASSWORD or GOOGLE_OAUTH_CLIENT_ID',
       });
     }
+    // Nudge does not read Google Calendar: only the reminders role needs the service account key.
+    if (env.SERVICE_ROLE === 'tasks') return;
     const hasFile = !!env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE;
     const hasJson = !!env.GOOGLE_SERVICE_ACCOUNT_JSON;
     if (hasFile && hasJson) {

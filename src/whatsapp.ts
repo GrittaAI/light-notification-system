@@ -29,6 +29,11 @@ export interface WhatsApp extends WhatsAppAdmin {
    * Resolves on a 2xx from WAHA; throws otherwise.
    */
   sendGroupMessage(groupId: string, text: string, mentionNumbers: string[]): Promise<void>;
+  /**
+   * Sends a direct message to one chat id (e.g. "919876543210@c.us"), no mentions. Used by Nudge.
+   * Same timeout and error shape as sendGroupMessage; the API key never appears in errors.
+   */
+  sendDirectMessage(chatId: string, text: string): Promise<void>;
   /** Live WAHA session status, e.g. "WORKING", "SCAN_QR_CODE", "STARTING", "FAILED", "STOPPED". Throws on error. */
   getSessionStatus(): Promise<string>;
   /** WhatsApp groups the session is in, sorted by name. Throws on error. */
@@ -126,6 +131,18 @@ export function createWhatsApp(
       const data = (await res.json()) as { status?: unknown };
       if (typeof data.status !== 'string' || !data.status) throw new Error('WAHA session status missing in response');
       return data.status;
+    },
+    async sendDirectMessage(chatId, text) {
+      const res = await fetchImpl(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Api-Key': env.WAHA_API_KEY },
+        body: JSON.stringify({ session: env.WAHA_SESSION, chatId, text }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+      if (!res.ok) {
+        const body = (await res.text().catch(() => '')).slice(0, 500);
+        throw new Error(`WAHA sendText failed: HTTP ${res.status} ${body}`);
+      }
     },
     async sendGroupMessage(groupId, text, mentionNumbers) {
       const res = await fetchImpl(url, {

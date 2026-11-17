@@ -12,6 +12,7 @@ import {
 } from '../store.js';
 import type { EventRow, SyncResult } from '../sync.js';
 import type { WhatsApp, WhatsAppAdmin, WhatsAppGroup } from '../whatsapp.js';
+import type { ApiResult } from '../http/common.js';
 import { HttpError, type SessionUser } from './auth.js';
 
 const log = logger.child({ module: 'admin-api' });
@@ -28,12 +29,7 @@ export interface ApiDeps {
   now?: () => Date;
 }
 
-export interface ApiResult {
-  status: number;
-  body: unknown;
-  /** Raw bytes instead of JSON (the QR image). */
-  binary?: { type: string; data: Buffer };
-}
+export type { ApiResult };
 
 const ok = (body: unknown, status = 200): ApiResult => ({ status, body });
 
@@ -266,7 +262,7 @@ export function createApiHandler(deps: ApiDeps) {
       case 'admins':
         if (user.role !== 'superadmin') throw new HttpError(403, 'superadmin only');
         if (segments.length === 1 && method === 'GET') {
-          return ok({ superadmin: deps.env.SUPERADMIN_EMAIL, admins: listAdmins(db) });
+          return ok({ superadmin: deps.env.SUPERADMIN_EMAIL, admins: listAdmins(db, deps.env.SUPERADMIN_EMAIL) });
         }
         if (segments.length === 1 && method === 'POST') {
           const row = addAdmin(db, body, user.email, deps.env.SUPERADMIN_EMAIL);

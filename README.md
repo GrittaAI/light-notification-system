@@ -79,6 +79,10 @@ Create `config.json` first, even as an empty-ish example: if the file does not e
 | `ADMIN_TRUST_PROXY` | no | `true` behind a reverse proxy you control: the login rate limit uses the last `X-Forwarded-For` entry (the last hop: the address your proxy saw; earlier entries are client-controlled) (default `false`) |
 | `CONFIG_PATH` | no | First-start import only: path to config.json (default `config.json`). Do not change it when using Docker (the file is mounted at /app/config.json) |
 | `LOG_LEVEL` | no | Log verbosity (default `info`) |
+| `SERVICE_ROLE` | no | `reminders` (default: call reminders) or `tasks` (Nudge). The `nudge` compose service sets `tasks` itself. The `tasks` role does not need the Google key |
+| `TASKS_PUBLIC_URL` | no | Nudge only: public base URL, e.g. `https://nudge.grittaai.com`. Used for the links in WhatsApp messages (`<url>/#/t/<id>`, `<url>/#/my`). Unset: messages carry no links |
+| `APP_NAME` | no | Nudge only: product name in the sign-in email subject (default `Nudge`) |
+| `TASKS_PORT` / `TASKS_HEALTH_PORT` | no | Nudge only: host port of the Nudge server (default `8082`, published on `127.0.0.1`) and the in-container health port (default `8083`) |
 
 > **Warning:** Do not `export WAHA_API_KEY` (or put it in your shell profile). A value exported in the shell overrides `.env` for the `waha` container but not for the app. The two keys then differ and every send fails with 401. Keep the key only in `.env`.
 
@@ -153,6 +157,28 @@ admin.example.com {
 ```
 
 Set `ADMIN_COOKIE_SECURE=true` and `ADMIN_TRUST_PROXY=true` in `.env` (only because Caddy sets `X-Forwarded-For`), then `docker compose up -d`. With `ADMIN_COOKIE_SECURE=true` the app also sends `Strict-Transport-Security: max-age=31536000`. Keep port 8081 closed to the internet (compose already binds it to 127.0.0.1).
+
+### Nudge (tasks, preview)
+
+Nudge is a second product in this repo: personal task lists with WhatsApp nudges 10 minutes before a task is due and every 10 minutes until it is done or snoozed (one batched message per person). It runs as its own container (`nudge`, `SERVICE_ROLE=tasks`) from the same image and the same SQLite file as the call reminders, so a crash or restart of one never stops the other. This release is the **backend and API only**; `/` serves a placeholder page until the app (PWA) is built.
+
+- **Containers.** `docker compose up -d --build` starts `waha`, `app` (call reminders, admin console on 8081) and `nudge` (API + nudge job on `127.0.0.1:8082`, health on its own port 8083). `nudge` needs the WAHA, SMTP and `SUPERADMIN_EMAIL` settings but not the Google key. Both containers share the `app-data` volume.
+- **People.** The `people` table (email, name, WhatsApp number, role `admin` or `member`, notification target) replaces the old admin list; existing admins are copied over on first start (name = the part of the email before `@`). `/api/admins` in the call-reminder console keeps working and is backed by `people`. Removing an admin there makes them a member (their tasks stay).
+- **Login methods (Nudge).** Email code: `POST /api/auth/email-code {email}` mails a 6-digit code (10 minutes, 5 attempts, 3 codes per email and 10 requests per IP per 15 minutes; the answer is the same for unknown emails), then `POST /api/auth/email-code/verify {email, code}`. Google Sign-In for active people when `GOOGLE_OAUTH_CLIENT_ID` is set. The superadmin can still use the password. Members stay signed in for 30 days (extended when used); admins and the superadmin for 12 hours. Nudge uses its own cookie `nudge_session`; a call-reminder console session is never valid in Nudge, or the other way round.
+- **API.** Members use `/api/me` and `/api/app/*` (owners, tasks sync pull `GET /api/app/tasks?since=`, `PUT /api/app/tasks/:id` with `baseVersion`, `done`, `reopen`, `snooze`, `unsnooze`, `DELETE`, activity). Admins also get `/api/people`, `/api/access-grants` and `/api/task-settings` (default group, lead and repeat minutes, quiet hours). Every call is checked against the access rules: owners edit their own list, admins edit all, other members only what an access grant gives them.
+- **Where nudges go.** The default WhatsApp group from the task settings (tagging the person by number), or per person another group or a direct message. A person with no usable target (no group set, or no WhatsApp number) is skipped and logged at most once an hour. WAHA is an unofficial WhatsApp client: a dedicated number for these messages is recommended.
+- **HTTPS with Caddy.** Put Nudge on its own host next to the reminders console. Use the compose service name or the published port:
+
+```
+reminders.grittaai.com {
+    reverse_proxy 127.0.0.1:8081
+}
+nudge.grittaai.com {
+    reverse_proxy 127.0.0.1:8082
+}
+```
+
+  If Caddy itself runs in the same compose project, use `reverse_proxy nudge:8082` (the container's network alias). Set `TASKS_PUBLIC_URL=https://nudge.grittaai.com`, and `ADMIN_COOKIE_SECURE=true` / `ADMIN_TRUST_PROXY=true` as above (both products read them).
 
 ## 6. Finding group IDs
 

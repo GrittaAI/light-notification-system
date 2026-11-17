@@ -4,6 +4,8 @@ import type { Env } from './config.js';
 export interface Alerts {
   /** Emails ALERT_EMAIL_TO. Throws if the SMTP send fails. */
   send(subject: string, text: string): Promise<void>;
+  /** Emails one address with the given subject, unprefixed (Nudge sign-in codes). Throws if the SMTP send fails. */
+  sendTo(to: string, subject: string, text: string): Promise<void>;
 }
 
 type AlertEnv = Pick<Env, 'ALERT_EMAIL_TO' | 'SMTP_HOST' | 'SMTP_PORT' | 'SMTP_USER' | 'SMTP_PASS'>;
@@ -26,6 +28,9 @@ export function createAlerts(env: AlertEnv): Alerts {
         subject: `[pushup-reminders] ${subject}`,
         text,
       });
+    },
+    async sendTo(to, subject, text) {
+      await transport.sendMail({ from: env.SMTP_USER, to, subject, text });
     },
   };
 }
