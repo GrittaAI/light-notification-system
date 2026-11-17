@@ -3,6 +3,7 @@
 // Layout: compact (< 840px) top app bar + FAB; expanded (>= 840px) navigation drawer; large (>= 1200px) list + detail pane.
 import * as idb from './idb.js';
 import { renderAdminPage, renderNudgeSettingsPage } from './admin.js';
+import { hasDevanagari, parseVoiceTask } from './voice-parse.js';
 import {
   applyActionLocal, applyPushed, calendarMonth, checklistProgress, DAY_MS, dayKey, dayKeyStart, fmtDayKey, shiftMonth, tasksOnDay, diffOutbox, dueChip, enqueue, mergeOutbox, newOwnerIds, fmtDateTime, fmtRelative, fmtTime, groupTasks,
   isoToIstInput, isSnoozed, istAt, istInputToIso, istParts, mergePull, newTask, pendingTaskIds, pruneInvisible, pushOutbox, putBody,
@@ -15,6 +16,9 @@ const $toasts = document.getElementById('toasts');
 const $alerts = document.getElementById('alerts');
 const $sheetRoot = document.getElementById('sheet-root');
 const mqExpanded = window.matchMedia('(min-width: 840px)');
+/** Browser speech recognition (Chrome, Edge, Safari); absent in Firefox, where the mic buttons are hidden. */
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+const voiceSupported = !!SpeechRec;
 const mqLarge = window.matchMedia('(min-width: 1200px)');
 
 // ---------- DOM helpers ----------
@@ -499,12 +503,19 @@ function taskActions(taskId) {
       listItem({ lead: icon('trash-2'), head: 'Delete', cls: 'danger', onclick: () => confirmDelete(taskId) })));
 }
 
+/**
+ * New task sheet. `opts`: { dueIso } (calendar day) or a voice result { title, dueIso, priority, voice: { transcript, past, source } }.
+ * A voice result is only a draft: nothing is created until Add is tapped.
+ */
 function newTaskSheet(opts) {
   if (S.ownerId === null || !canEditOwner(S.ownerId)) return;
-  const st = { due: opts && opts.dueIso ? { key: 'pick', iso: opts.dueIso } : null, priority: 'medium' };
+  if (!opts || opts instanceof Event) opts = {};
+  const voice = opts.voice || null;
+  const st = { due: opts.dueIso ? { key: 'pick', iso: opts.dueIso } : null, priority: opts.priority || 'medium' };
   const content = h('div', {});
   const close = openSheet(content, { label: 'New task', keepOpen: true });
-  const title = h('textarea', { class: 'title-input', id: 'nt-title', rows: '1', maxlength: '200', placeholder: 'What needs doing?', 'aria-label': 'Task title', 'data-autofocus': true });
+  const title = h('textarea', { class: 'title-input', id: 'nt-title', rows: '1', maxlength: '200', placeholder: 'What needs doing?', 'aria-label': 'Task title', 'data-autofocus': !voice });
+  if (opts.title) title.value = String(opts.title).slice(0, 200);
   const dueRow = h('div', { class: 'chip-row', role: 'group', 'aria-label': 'Due date' });
   const prioRow = h('div', { class: 'chip-row', role: 'radiogroup', 'aria-label': 'Priority' });
   const addBtn = h('button', { type: 'button', class: 'btn', id: 'nt-add' }, 'Add task');
@@ -512,7 +523,7 @@ function newTaskSheet(opts) {
     const now = nowMs();
     fill(dueRow,
       h('button', { type: 'button', class: 'chip', 'aria-pressed': String(!!st.due && st.due.key === 'pick'),
-        onclick: () => dueSheetInline() }, icon('calendar'), st.due && st.due.key === 'pick' ? whenText(Date.parse(st.due.iso), now) : 'Pick date'),
+        onclick: () => dueSheetInline() }, icon('calendar'), st.due && st.due.key === 'pick' ? fmtDateTime(Date.parse(st.due.iso), now) : 'Pick date'),
       namedTimes(now, { forSnooze: false }).slice(0, 3).map((x) => h('button', { type: 'button', class: 'chip', 'aria-pressed': String(!!st.due && st.due.key === x.key),
         onclick: () => { st.due = st.due && st.due.key === x.key ? null : { key: x.key, iso: x.iso }; draw(); } }, icon(x.ic), `${x.label} · ${fmtTime(x.ms)}`)));
     fill(prioRow, PRIO.slice().reverse().map(([p, l]) => h('button', { type: 'button', class: 'chip', role: 'radio', 'aria-checked': String(st.priority === p), 'aria-pressed': String(st.priority === p),
@@ -539,13 +550,168 @@ function newTaskSheet(opts) {
   addBtn.addEventListener('click', submit);
   title.addEventListener('input', () => { autoRows(title, 4); draw(); });
   title.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); submit(); } });
-  content.append(...sheetHead('New task', ownerOf(S.ownerId) && S.ownerId !== myOwnerId() ? `In ${ownerOf(S.ownerId).name}’s list` : null),
-    h('div', { class: 'sheet-body' }, title,
+  const micBtn = voiceSupported && h('button', { type: 'button', class: 'icon-btn tonal', id: 'nt-mic', 'aria-label': 'Say the task instead', title: 'Say it', onclick: () => voiceSheet() }, icon('mic'));
+  const pastWarn = voice && voice.past && st.due;
+  content.append(...sheetHead(voice ? 'Check your task' : 'New task', ownerOf(S.ownerId) && S.ownerId !== myOwnerId() ? `In ${ownerOf(S.ownerId).name}’s list` : voice ? 'Fix anything, then tap Add task' : null, micBtn),
+    h('div', { class: 'sheet-body' },
+      voice && h('div', { class: 'voice-heard' }, icon(voice.source === 'ai' ? 'sparkles' : 'mic', 'sm'), h('span', {}, `“${voice.transcript}”`)),
+      pastWarn && h('div', { class: 'callout warn', role: 'alert' }, icon('alert-triangle'), h('span', {}, 'That time has already passed. Pick another time below.')),
+      voice && !st.due && h('div', { class: 'callout info' }, icon('calendar'), h('span', {}, voice.source === 'fallback' ? 'I could not work out a date. Pick one below, or leave it without a date.' : 'No date was said. Pick one below, or leave it without a date.')),
+      title,
       h('div', { class: 'stack' }, h('span', { class: 'field-label' }, 'Due'), dueRow, inlinePick),
       h('div', { class: 'stack' }, h('span', { class: 'field-label' }, 'Priority'), prioRow)),
     h('div', { class: 'sheet-actions' }, h('button', { type: 'button', class: 'btn text', onclick: close }, 'Cancel'), addBtn));
   draw();
-  title.focus();
+  autoRows(title, 4);
+  if (voice) addBtn.focus(); else title.focus();
+}
+
+// ---------- voice ----------
+
+/**
+ * Voice input (Indian English, which also catches Hinglish). Keeps listening, restarting quietly when the browser
+ * stops on a pause, until the person taps Done; the transcript stays on screen. Then: the server's AI first; the
+ * in-app parser only when the AI is not set up, the device is offline, or the AI call fails.
+ * Always ends in the New task sheet for review; nothing is created here.
+ */
+const VOICE_MAX_MS = 3 * 60_000;
+function voiceSheet() {
+  if (!voiceSupported || S.ownerId === null || !canEditOwner(S.ownerId)) return;
+  const content = h('div', { class: 'voice' });
+  let rec = null;
+  let state = 'listening'; // listening | stopping | understanding | closed | error
+  const finals = []; // finished phrases from every recognition session
+  let sessionFinals = []; // finished phrases of the current session
+  let interim = '';
+  const startedAt = Date.now();
+  let quickEnds = 0; // sessions that ended at once without hearing anything (a broken mic must not loop forever)
+  let sessionStart = 0;
+  let sessionHeard = false;
+  const close = openSheet(content, { label: 'Say a task', keepOpen: true });
+  const live = h('p', { class: 'voice-text', 'aria-live': 'polite' });
+  const status = h('p', { class: 'voice-status' }, 'Listening… tap Done when you finish');
+  const doneBtn = h('button', { type: 'button', class: 'btn', id: 'voice-done', onclick: () => finish() }, icon('check'), 'Done');
+  const orb = h('button', { type: 'button', class: 'voice-orb listening', 'aria-label': 'Done speaking', onclick: () => finish() }, icon('mic'));
+  const actions = h('div', { class: 'sheet-actions' }, h('button', { type: 'button', class: 'btn text', onclick: () => cancel() }, 'Cancel'), doneBtn);
+  content.append(...sheetHead('Say a task'), h('div', { class: 'voice-body' }, orb, status, live,
+    h('p', { class: 'voice-hint' }, 'Say the whole task, then tap Done. Try “Demo for Margin Sales tomorrow at 9:30 pm” or “kal shaam 6 baje client call”.')), actions);
+
+  const transcript = () => [...finals, ...sessionFinals, interim].map((x) => x.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  const show = () => { live.textContent = transcript(); doneBtn.disabled = !transcript(); };
+  const stopRec = (abort) => { try { if (rec) (abort ? rec.abort() : rec.stop()); } catch { /* already stopped */ } };
+  const cancel = () => { state = 'closed'; stopRec(true); close(); };
+
+  const showError = (msg, retry = true) => {
+    state = 'error';
+    stopRec(true);
+    orb.classList.remove('listening');
+    orb.setAttribute('aria-label', 'Try again');
+    orb.onclick = () => voiceSheet();
+    status.textContent = msg;
+    const text = transcript();
+    fill(actions, h('button', { type: 'button', class: 'btn text', onclick: () => cancel() }, 'Cancel'),
+      retry && h('button', { type: 'button', class: 'btn tonal', onclick: () => voiceSheet() }, icon('mic'), 'Try again'),
+      text ? h('button', { type: 'button', class: 'btn', onclick: () => understand(text) }, 'Use what I said')
+        : h('button', { type: 'button', class: 'btn text', onclick: () => { cancel(); newTaskSheet(); } }, 'Type instead'));
+  };
+
+  const draft = (r, text, source) => {
+    if (state === 'closed') return;
+    state = 'closed';
+    newTaskSheet({ title: r.title || text, dueIso: r.dueIso, priority: r.priority, voice: { transcript: text, past: !!r.past, source } });
+  };
+
+  async function understand(text) {
+    state = 'understanding';
+    stopRec(true);
+    orb.classList.remove('listening');
+    orb.disabled = true;
+    doneBtn.disabled = true;
+    live.textContent = `“${text}”`;
+    const local = () => parseVoiceTask(text, nowMs());
+    if (!S.online) { draft(local(), text, 'app'); return; }
+    status.textContent = 'Understanding…';
+    try {
+      // the AI separates the task from the date words (translated to plain English); the dates are computed here
+      const r = await api('POST', '/api/app/voice-parse', { text });
+      const fromWhen = r.when ? parseVoiceTask(r.when, nowMs()) : null;
+      const fromText = parseVoiceTask(text, nowMs());
+      const due = fromWhen && fromWhen.dueIso ? fromWhen : fromText.dueIso && !hasDevanagari(text) ? fromText : null;
+      draft({ title: r.title, dueIso: due ? due.dueIso : null, priority: r.priority || fromText.priority, past: due ? due.past : false }, text, 'ai');
+    } catch {
+      // AI not set up (503), failing or rate limited: fall back to the in-app parser
+      const r = local();
+      draft(r, text, r.understood && !hasDevanagari(text) ? 'app' : 'fallback');
+    }
+  }
+
+  function finish() {
+    if (state !== 'listening') return;
+    const text = transcript();
+    if (!text) { status.textContent = 'I haven’t heard anything yet. Speak, then tap Done.'; return; }
+    understand(text);
+  }
+
+  const startSession = () => {
+    try {
+      rec = new SpeechRec();
+      rec.lang = 'en-IN';
+      rec.interimResults = true;
+      rec.continuous = true;
+      rec.maxAlternatives = 1;
+    } catch {
+      showError('Voice input is not available in this browser.', false);
+      return;
+    }
+    sessionFinals = [];
+    sessionHeard = false;
+    sessionStart = Date.now();
+    rec.onresult = (ev) => {
+      sessionHeard = true;
+      // rebuilt from the whole result list each time (Android repeats earlier text inside later results)
+      const fin = [];
+      let inter = '';
+      for (let i = 0; i < ev.results.length; i++) {
+        const t = ev.results[i][0].transcript.trim();
+        if (!t) continue;
+        if (ev.results[i].isFinal) {
+          const last = fin[fin.length - 1];
+          if (last && t.toLowerCase().startsWith(last.toLowerCase())) fin[fin.length - 1] = t;
+          else fin.push(t);
+        } else inter += ' ' + t;
+      }
+      sessionFinals = fin;
+      interim = inter.trim();
+      show();
+    };
+    rec.onerror = (ev) => {
+      if (state !== 'listening') return;
+      if (ev.error === 'no-speech' || ev.error === 'aborted') return; // a pause: onend restarts
+      const msg = {
+        'not-allowed': 'Microphone access is blocked. Allow it in your browser settings, then try again.',
+        'service-not-allowed': 'Voice input is turned off for this site.',
+        'audio-capture': 'No microphone found.',
+        network: 'Voice input needs an internet connection.',
+      }[ev.error];
+      showError(msg || 'Something went wrong with voice input.', ev.error !== 'service-not-allowed' && ev.error !== 'audio-capture');
+    };
+    rec.onend = () => {
+      // keep what this session heard (an unfinished phrase counts too), then keep listening until Done
+      finals.push(...sessionFinals);
+      if (interim) finals.push(interim);
+      sessionFinals = [];
+      interim = '';
+      show();
+      if (state !== 'listening') return;
+      if (Date.now() - startedAt > VOICE_MAX_MS) { finish(); return; }
+      quickEnds = !sessionHeard && Date.now() - sessionStart < 1000 ? quickEnds + 1 : 0;
+      if (quickEnds >= 5) { showError('The microphone keeps stopping. Check it, then try again.'); return; }
+      startSession();
+    };
+    try { rec.start(); } catch { showError('Could not start the microphone.'); }
+  };
+  show();
+  startSession();
 }
 
 // ---------- sign-in ----------
@@ -770,13 +936,17 @@ function buildShell() {
   view.header = h('header', { class: 'topbar' }, who, view.title, view.status, avatarBtn);
   view.content = h('main', { class: 'content', id: 'main', tabindex: '-1' });
   view.detail = h('aside', { class: 'detail', 'aria-label': 'Task details' });
-  view.fab = h('button', { type: 'button', class: 'fab', id: 'fab-new', onclick: newTaskSheet }, icon('plus'), h('span', {}, 'New task'));
+  view.fab = h('div', { class: 'fab-stack' },
+    voiceSupported && h('button', { type: 'button', class: 'fab-mic', id: 'fab-mic', 'aria-label': 'Say a task', title: 'Say a task', onclick: () => voiceSheet() }, icon('mic')),
+    h('button', { type: 'button', class: 'fab', id: 'fab-new', onclick: () => newTaskSheet() }, icon('plus'), h('span', {}, 'New task')));
 
   // navigation drawer (expanded layouts)
   view.drawerLists = h('div', { class: 'stack-0' });
   view.drawer = h('nav', { class: 'drawer', 'aria-label': 'Navigation' },
     h('div', { class: 'brand-row' }, h('div', { class: 'logo' }, icon('bell')), h('span', { class: 'brand-text' }, h('span', { class: 'title-l' }, 'Pushup Nudge'), h('span', { class: 'by-line' }, 'by Gritta AI'))),
-    h('button', { type: 'button', class: 'fab', id: 'fab-new-drawer', onclick: newTaskSheet }, icon('plus'), h('span', {}, 'New task')),
+    h('div', { class: 'drawer-new', id: 'drawer-new' },
+      h('button', { type: 'button', class: 'fab', id: 'fab-new-drawer', onclick: () => newTaskSheet() }, icon('plus'), h('span', {}, 'New task')),
+      voiceSupported && h('button', { type: 'button', class: 'icon-btn tonal drawer-mic', id: 'drawer-mic', 'aria-label': 'Say a task', title: 'Say a task', onclick: () => voiceSheet() }, icon('mic'))),
     h('div', { class: 'nav-label' }, 'Lists'), view.drawerLists,
     h('div', { class: 'sheet-divider' }),
     admin && h('a', { class: 'nav-item', href: '#/admin', 'data-nav': 'admin' }, icon('settings'), h('span', { class: 'nav-text' }, 'Admin')),
@@ -816,7 +986,7 @@ function renderNav(r) {
   view.title.hidden = !page && layout() === 'compact';
   view.header.hidden = r.name === 'task' && layout() !== 'large';
   view.fab.hidden = r.name !== 'home' && !(r.name === 'task' && layout() === 'large') || S.ownerId === null || !canEditOwner(S.ownerId);
-  const fab2 = view.drawer.querySelector('#fab-new-drawer');
+  const fab2 = view.drawer.querySelector('#drawer-new');
   if (fab2) fab2.hidden = S.ownerId === null || !canEditOwner(S.ownerId);
 }
 function renderDrawerCounts() {
@@ -1033,7 +1203,7 @@ function renderHomeList() {
     box.append(h('div', { class: 'empty' }, h('div', { class: 'icon-wrap' }, icon('circle-check-big', 'xl')),
       h('h2', {}, g.done.length ? 'All done' : 'Nothing to do'),
       h('p', {}, editable ? 'Add a task with a due time and we will nudge you on WhatsApp before it is due.' : 'There are no open tasks in this list.'),
-      editable && h('button', { type: 'button', class: 'btn tonal', onclick: newTaskSheet }, icon('plus'), 'New task')));
+      editable && h('button', { type: 'button', class: 'btn tonal', onclick: () => newTaskSheet() }, icon('plus'), 'New task')));
   }
   const sel = route().name === 'task' ? route().id : null;
   for (const s of [

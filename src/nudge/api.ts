@@ -13,6 +13,7 @@ import {
 import { addAudit, listNudgeAudit, parseOrThrow, StoreError } from '../store.js';
 import { canEdit, canView, visibleOwners } from '../tasks/access.js';
 import { effectiveSettings, previewDigest, targetFor } from '../tasks/nudges.js';
+import type { VoiceLlm } from '../tasks/voice.js';
 import { getTaskSettings, setTaskSettings } from '../tasks/settings.js';
 import { logger } from '../logger.js';
 import type { WhatsApp } from '../whatsapp.js';
@@ -30,7 +31,12 @@ export interface NudgeApiDeps {
   /** WAHA client for the groups list and test nudges. Without it those endpoints answer 503. */
   whatsapp?: Pick<WhatsApp, 'sendGroupMessage' | 'sendDirectMessage' | 'listGroups'>;
   appName?: string;
+  /** Smart fallback for voice tasks (LLM_API_KEY set). Without it POST /api/app/voice-parse answers 503. */
+  voiceLlm?: VoiceLlm;
 }
+
+const VOICE_PER_MIN = 20;
+const voiceSchema = z.object({ text: z.string({ error: 'say something first' }).trim().min(1, 'say something first').max(500, 'that was too long; try a shorter sentence') });
 
 const ok = (body: unknown, status = 200): ApiResult => ({ status, body });
 const isAdmin = (u: SessionUser) => u.role === 'admin' || u.role === 'superadmin';
@@ -68,6 +74,24 @@ export function createNudgeApi(deps: NudgeApiDeps) {
     return new HttpError(502, `${what}${status ? ` (WAHA HTTP ${status})` : ''}`);
   };
   const lastTestNudge = new Map<number, number>();
+  const voiceHits = new Map<string, number[]>();
+
+  /** Spoken sentence -> { title, dueIso, priority, past } via the model. The client always shows it for review first. */
+  async function voiceParse(user: SessionUser, body: unknown): Promise<ApiResult> {
+    if (!deps.voiceLlm) throw new HttpError(503, 'smart voice understanding is not set up on this server');
+    const { text } = parseOrThrow(voiceSchema, body);
+    const nowMs = clock().getTime();
+    const recent = (voiceHits.get(user.email) ?? []).filter((t) => nowMs - t < 60_000);
+    if (recent.length >= VOICE_PER_MIN) throw new HttpError(429, 'too many voice requests; wait a minute');
+    recent.push(nowMs);
+    voiceHits.set(user.email, recent);
+    try {
+      return ok({ ...(await deps.voiceLlm.parse(text, clock())), source: 'ai' });
+    } catch (err) {
+      log.warn('voice parse failed', { err: err instanceof Error ? err.message : String(err) });
+      throw new HttpError(502, 'could not understand that automatically');
+    }
+  }
   const isSuperEmail = (email: string) => email.toLowerCase() === deps.env.SUPERADMIN_EMAIL.toLowerCase();
 
   // ----- tasks -----
@@ -421,6 +445,8 @@ export function createNudgeApi(deps: NudgeApiDeps) {
         else if (sub === 'nudge-target' && method === 'GET' && segments.length === 2) result = nudgeTarget(user);
         else if (sub === 'nudge-preview' && method === 'GET' && segments.length === 2) result = getPreview(user, query);
         else if (sub === 'nudge-preview' && segments[2] === 'send' && method === 'POST' && segments.length === 3) result = await sendPreview(user, body);
+        else if (sub === 'voice-parse' && method === 'POST' && segments.length === 2) result = await voiceParse(user, body);
+        else if (sub === 'voice-parse' && method === 'GET' && segments.length === 2) result = ok({ ai: !!deps.voiceLlm });
         else if (sub === 'notify-settings' && method === 'GET' && segments.length === 2) result = notifyView(user, notifySubject(user, query.get('person'), false));
         else if (sub === 'notify-settings' && method === 'PUT' && segments.length === 2) result = putNotify(user, body);
         else if (sub === 'groups' && method === 'GET' && segments.length === 2) {

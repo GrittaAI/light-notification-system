@@ -16,7 +16,7 @@ afterEach(() => { for (const s of servers.splice(0)) { s.close(); s.closeAllConn
 
 export interface Mail { to: string; subject: string; text: string }
 
-export async function setupNudge(opts: { db?: DB; env?: Record<string, unknown>; mailer?: boolean; publicDir?: string; whatsapp?: any } = {}) {
+export async function setupNudge(opts: { db?: DB; env?: Record<string, unknown>; mailer?: boolean; publicDir?: string; whatsapp?: any; voiceLlm?: any } = {}) {
   const db = opts.db ?? openDb(':memory:');
   let nowMs = T0;
   const mails: Mail[] = [];
@@ -30,6 +30,7 @@ export async function setupNudge(opts: { db?: DB; env?: Record<string, unknown>;
     appName: 'Nudge',
     ...(opts.publicDir && { publicDir: opts.publicDir }),
     ...(opts.whatsapp && { whatsapp: opts.whatsapp }),
+    ...(opts.voiceLlm && { voiceLlm: opts.voiceLlm }),
     verifyIdToken: async (_t) => ({ email: 'google@example.com', email_verified: true }),
   });
   servers.push(server);

@@ -114,6 +114,11 @@ export const envSchema = z
   TASKS_HOST: z.string().min(1).default('127.0.0.1'),
   TASKS_HEALTH_PORT: z.coerce.number().int().positive().default(8083),
   // Public base URL of Nudge (e.g. https://nudge.grittaai.com) used for links in WhatsApp messages. Unset: no links.
+  // Voice tasks: an OpenAI-compatible chat API used only when the app cannot read a spoken date itself.
+  // Unset LLM_API_KEY: voice still works with the built-in parser, without the smart fallback.
+  LLM_API_KEY: optionalString,
+  LLM_BASE_URL: z.string().trim().url().default('https://integrate.api.nvidia.com/v1'),
+  LLM_MODEL: z.string().trim().min(1).default('nvidia/nemotron-3.5-lightning-30b-a3b'),
   TASKS_PUBLIC_URL: optionalString
     .refine((v) => v === undefined || /^https?:\/\/[^\s/]+/i.test(v.trim()), 'must be an http(s) URL')
     .transform((v) => v?.trim().replace(/\/+$/, '')),

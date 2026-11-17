@@ -21,6 +21,7 @@ import { logStartupSummary } from './startup.js';
 import { loadRuntimeConfig, seedFromConfigFile } from './store.js';
 import { runSync, type SyncResult } from './sync.js';
 import { runTaskNudges } from './tasks/nudges.js';
+import { createVoiceLlm } from './tasks/voice.js';
 import type { WhatsApp } from './whatsapp.js';
 
 export const SYNC_SCHEDULE = '*/2 * * * *'; // every 2 minutes
@@ -149,7 +150,10 @@ export async function startTasksService(env: Env, deps: TasksDeps): Promise<Serv
 
   const healthServer = startNudgeHealthServer(whatsapp, tracker, env.TASKS_HEALTH_PORT);
   const nudgeServer = startNudgeServer(
-    { db, env, mailer, whatsapp, appName: env.APP_NAME, verifyIdToken: deps.verifyIdToken },
+    {
+      db, env, mailer, whatsapp, appName: env.APP_NAME, verifyIdToken: deps.verifyIdToken,
+      ...(env.LLM_API_KEY && { voiceLlm: createVoiceLlm({ baseUrl: env.LLM_BASE_URL, model: env.LLM_MODEL, apiKey: env.LLM_API_KEY }) }),
+    },
     env.TASKS_PORT,
     env.TASKS_HOST,
   );

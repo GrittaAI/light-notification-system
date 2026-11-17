@@ -27,6 +27,7 @@ const STATIC_FILES: StaticFiles = {
   '/sync-core.js': { file: 'sync-core.js', type: 'text/javascript; charset=utf-8', cache: NC },
   '/idb.js': { file: 'idb.js', type: 'text/javascript; charset=utf-8', cache: NC },
   '/admin.js': { file: 'admin.js', type: 'text/javascript; charset=utf-8', cache: NC },
+  '/voice-parse.js': { file: 'voice-parse.js', type: 'text/javascript; charset=utf-8', cache: NC },
   '/sw.js': { file: 'sw.js', type: 'text/javascript; charset=utf-8', cache: NC },
   '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8', cache: NC },
   '/icons.svg': { file: 'icons.svg', type: 'image/svg+xml', cache: NC },
