@@ -508,3 +508,4 @@ button.setting, label.setting { width: 100%; text-align: left; cursor: pointer; 
 .by-line { font-size: 12px; line-height: 16px; letter-spacing: .4px; color: var(--on-surface-variant); }
 .brand .by-line { margin-top: -6px; }
 .brand-text { display: flex; flex-direction: column; min-width: 0; }
+.setting .li-body > .link-btn { align-self: flex-start; padding: 4px 0; min-height: 0; }

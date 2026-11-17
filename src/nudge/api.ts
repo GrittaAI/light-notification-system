@@ -7,10 +7,12 @@ import { createGroupsCache } from '../admin/routes.js';
 import type { Env } from '../config.js';
 import type { DB } from '../db.js';
 import type { ApiResult } from '../http/common.js';
-import { createPerson, deactivatePerson, ensureSuperadminPerson, getPerson, listPeople, type PersonRow, updatePerson } from '../people.js';
+import {
+  createPerson, deactivatePerson, ensureSuperadminPerson, getPerson, listPeople, notifyPrefsSchema, type PersonRow, updateNotifyPrefs, updatePerson,
+} from '../people.js';
 import { addAudit, listNudgeAudit, parseOrThrow, StoreError } from '../store.js';
 import { canEdit, canView, visibleOwners } from '../tasks/access.js';
-import { previewDigest, targetFor } from '../tasks/nudges.js';
+import { effectiveSettings, previewDigest, targetFor } from '../tasks/nudges.js';
 import { getTaskSettings, setTaskSettings } from '../tasks/settings.js';
 import { logger } from '../logger.js';
 import type { WhatsApp } from '../whatsapp.js';
@@ -148,6 +150,68 @@ export function createNudgeApi(deps: NudgeApiDeps) {
     return ok({ target: p.notifyTarget, configured });
   }
 
+  // ----- personal notification settings (each person sets their own; the superadmin can change anyone's) -----
+
+  /** Whose settings: yourself by default; admins may VIEW anyone's; only the person or the superadmin may change them. */
+  function notifySubject(user: SessionUser, raw: unknown, edit: boolean): PersonRow {
+    const id = raw === undefined || raw === null || raw === '' ? user.personId : parseIntId(String(raw));
+    if (id === null || id === undefined) throw new HttpError(409, 'Create your task list first');
+    const p = getPerson(db, id);
+    if (!p) throw new HttpError(404, 'not found');
+    const self = id === user.personId;
+    if (!self && !isAdmin(user)) throw new HttpError(403, 'you can only see your own notification settings');
+    if (edit && !self && user.role !== 'superadmin') throw new HttpError(403, `only ${p.name} or the owner can change these settings`);
+    return p;
+  }
+
+  function notifyView(user: SessionUser, p: PersonRow): ApiResult {
+    const team = getTaskSettings(db);
+    return ok({
+      person: { id: p.id, name: p.name, email: p.email, active: p.active },
+      canEdit: p.id === user.personId || user.role === 'superadmin',
+      prefs: {
+        whatsapp: p.whatsapp, notifyTarget: p.notifyTarget, notifyGroupId: p.notifyGroupId,
+        leadMinutes: p.leadMinutes, repeatMinutes: p.repeatMinutes, quietHours: p.quietHours,
+      },
+      team: { leadMinutes: team.leadMinutes, repeatMinutes: team.repeatMinutes, quietHours: team.quietHours, mergeAheadMinutes: team.mergeAheadMinutes, defaultGroupId: team.defaultGroupId },
+    });
+  }
+
+  function putNotify(user: SessionUser, body: unknown): ApiResult {
+    const raw = (body ?? {}) as Record<string, unknown>;
+    const p = notifySubject(user, raw.personId, true);
+    const { personId: _ignored, ...input } = raw;
+    const { before, after } = updateNotifyPrefs(db, p.id, input);
+    // A new repeat interval applies from the last nudge, so a shorter one takes effect now rather than after the old wait.
+    const team = getTaskSettings(db);
+    const oldRepeat = effectiveSettings(before, team).repeatMinutes;
+    const newRepeat = effectiveSettings(after, team).repeatMinutes;
+    if (oldRepeat !== newRepeat) {
+      const st = db.prepare(`SELECT last_digest_at FROM task_nudge_state WHERE owner_person_id = ?`).get(p.id) as { last_digest_at: string | null } | undefined;
+      if (st?.last_digest_at) {
+        db.prepare(`UPDATE task_nudge_state SET next_digest_at = ? WHERE owner_person_id = ?`)
+          .run(new Date(Date.parse(st.last_digest_at) + newRepeat * 60_000).toISOString(), p.id);
+      }
+    }
+    addAudit(db, user.email, 'person_notify_update', {
+      id: p.id, email: p.email, notifyTarget: after.notifyTarget, whatsappSet: !!after.whatsapp,
+      leadMinutes: after.leadMinutes, repeatMinutes: after.repeatMinutes, quietHours: after.quietHours,
+    });
+    return notifyView(user, after);
+  }
+
+  /** True when an admin's People edit would change notification fields (those belong to the person and the superadmin). */
+  function changesNotify(before: PersonRow, body: unknown): boolean {
+    const b = (body ?? {}) as Record<string, unknown>;
+    const r = notifyPrefsSchema.safeParse({ whatsapp: b.whatsapp, notifyTarget: b.notifyTarget, notifyGroupId: b.notifyGroupId });
+    if (!r.success) return false; // updatePerson reports the validation error
+    const v = r.data;
+    if (v.whatsapp !== undefined && v.whatsapp !== before.whatsapp) return true;
+    if (v.notifyTarget !== undefined && v.notifyTarget !== before.notifyTarget) return true;
+    const target = v.notifyTarget ?? before.notifyTarget;
+    return target === 'group' && v.notifyGroupId !== undefined && v.notifyGroupId !== before.notifyGroupId;
+  }
+
   // ----- test notifications: preview / send a person's nudge now -----
 
   /** The person whose nudge is previewed: yourself, or (admins) anyone except the superadmin's own row. */
@@ -271,7 +335,11 @@ export function createNudgeApi(deps: NudgeApiDeps) {
     }
     if (segments.length === 2 && method === 'PUT') {
       const id = parseIntId(segments[1]);
-      guardAdminChange(user, getPerson(db, id), b);
+      const before = getPerson(db, id);
+      guardAdminChange(user, before, b);
+      if (before && !isSuperActor && user.personId !== id && changesNotify(before, body)) {
+        throw new HttpError(403, `only ${before.name} or the owner can change their WhatsApp number and where nudges go`);
+      }
       const row = updatePerson(db, id, body, { superadminEmail: sup, actorIsSuperadmin: isSuperActor });
       audit('person_update', { id: row.id, email: row.email, role: row.role, active: row.active, notifyTarget: row.notifyTarget });
       return ok(row);
@@ -353,7 +421,18 @@ export function createNudgeApi(deps: NudgeApiDeps) {
         else if (sub === 'nudge-target' && method === 'GET' && segments.length === 2) result = nudgeTarget(user);
         else if (sub === 'nudge-preview' && method === 'GET' && segments.length === 2) result = getPreview(user, query);
         else if (sub === 'nudge-preview' && segments[2] === 'send' && method === 'POST' && segments.length === 3) result = await sendPreview(user, body);
-        else if (sub === 'tasks' && method === 'GET' && segments.length === 2) result = getTasks(user, query);
+        else if (sub === 'notify-settings' && method === 'GET' && segments.length === 2) result = notifyView(user, notifySubject(user, query.get('person'), false));
+        else if (sub === 'notify-settings' && method === 'PUT' && segments.length === 2) result = putNotify(user, body);
+        else if (sub === 'groups' && method === 'GET' && segments.length === 2) {
+          // for choosing where your own nudges go; only admins may force a refresh from WhatsApp
+          if (user.personId === null && !isAdmin(user)) throw new HttpError(403, 'Create your task list first');
+          try {
+            result = ok(await groups(isAdmin(user) && query.get('refresh') === '1'));
+          } catch (err) {
+            log.warn('listing WhatsApp groups failed', { err: err instanceof Error ? err.message : String(err) });
+            throw wahaFail('could not list WhatsApp groups', err);
+          }
+        } else if (sub === 'tasks' && method === 'GET' && segments.length === 2) result = getTasks(user, query);
         else if (sub === 'tasks') result = taskRoutes(user, method, segments, body);
         break;
       case 'nudge':
@@ -381,6 +460,7 @@ export function createNudgeApi(deps: NudgeApiDeps) {
         requireAdmin(user);
         if (segments.length === 1 && method === 'GET') result = ok(getTaskSettings(db));
         if (segments.length === 1 && method === 'PUT') {
+          if (user.role !== 'superadmin') throw new HttpError(403, 'only the owner can change the team notification settings');
           const next = setTaskSettings(db, body);
           addAudit(db, user.email, 'task_settings_update', { ...next });
           result = ok(next);

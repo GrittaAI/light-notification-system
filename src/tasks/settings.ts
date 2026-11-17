@@ -30,20 +30,22 @@ const KEYS = {
   quietHours: 'tasks.quiet_hours',
 } as const;
 
-const hhmm = z.string({ error: 'Use a time like 21:00' }).regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use a time like 21:00');
-const minutes = (min: number, max: number) => {
+export const hhmm = z.string({ error: 'Use a time like 21:00' }).regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use a time like 21:00');
+export const minutes = (min: number, max: number) => {
   const msg = `Enter a whole number from ${min} to ${max}`;
   return z.number({ error: msg }).int(msg).min(min, msg).max(max, msg);
 };
+
+export const quietHoursSchema = () => z
+  .object({ enabled: z.boolean({ error: 'Turn quiet hours on or off' }), start: hhmm, end: hhmm })
+  .refine((q) => !q.enabled || q.start !== q.end, 'Start and end times must be different');
 
 export const taskSettingsSchema = z.object({
   leadMinutes: minutes(1, 1440),
   repeatMinutes: minutes(5, 1440),
   mergeAheadMinutes: minutes(0, 15),
   defaultGroupId: z.string({ error: 'Choose a WhatsApp group' }).trim().regex(/^[\w-]+@g\.us$/, 'Choose a WhatsApp group').nullable(),
-  quietHours: z
-    .object({ enabled: z.boolean({ error: 'Turn quiet hours on or off' }), start: hhmm, end: hhmm })
-    .refine((q) => !q.enabled || q.start !== q.end, 'Start and end times must be different'),
+  quietHours: quietHoursSchema(),
 });
 
 export function getTaskSettings(db: DB): TaskSettings {

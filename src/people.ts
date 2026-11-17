@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { whatsappSchemaWith } from './config.js';
 import type { DB } from './db.js';
 import { parseOrThrow, StoreError } from './store-errors.js';
+import { minutes, type QuietHours, quietHoursSchema } from './tasks/settings.js';
 
 export type PersonRole = 'admin' | 'member';
 export type NotifyTarget = 'default' | 'group' | 'dm';
@@ -20,6 +21,10 @@ export interface PersonRow {
   active: boolean;
   notifyTarget: NotifyTarget;
   notifyGroupId: string | null;
+  /** Personal nudge timing; null = the team default. */
+  leadMinutes: number | null;
+  repeatMinutes: number | null;
+  quietHours: QuietHours | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -27,11 +32,23 @@ export interface PersonRow {
 export interface PersonDbRow {
   id: number; email: string; name: string; whatsapp: string | null; role: PersonRole; active: number;
   notify_target: NotifyTarget; notify_group_id: string | null; created_at: string; updated_at: string;
+  lead_minutes?: number | null; repeat_minutes?: number | null; quiet_hours?: string | null;
+}
+
+/** A stored quiet-hours override, or null when unset or unreadable (the team default then applies). */
+function parseQuiet(raw: string | null | undefined): QuietHours | null {
+  if (!raw) return null;
+  try {
+    const r = quietHoursSchema().safeParse(JSON.parse(raw));
+    return r.success ? r.data : null;
+  } catch { return null; }
 }
 
 export const toPerson = (r: PersonDbRow): PersonRow => ({
   id: r.id, email: r.email, name: r.name, whatsapp: r.whatsapp, role: r.role, active: r.active === 1,
-  notifyTarget: r.notify_target, notifyGroupId: r.notify_group_id, createdAt: r.created_at, updatedAt: r.updated_at,
+  notifyTarget: r.notify_target, notifyGroupId: r.notify_group_id,
+  leadMinutes: r.lead_minutes ?? null, repeatMinutes: r.repeat_minutes ?? null, quietHours: parseQuiet(r.quiet_hours),
+  createdAt: r.created_at, updatedAt: r.updated_at,
 });
 
 const nowIso = () => new Date().toISOString();
@@ -163,6 +180,45 @@ export function updatePerson(db: DB, id: number, input: unknown, opts: PersonWri
     throw err;
   }
   return getPerson(db, id)!;
+}
+
+// ---------- personal notification settings ----------
+
+const blankToNull = (v: unknown) => (typeof v === 'string' && v.trim() === '' ? null : v);
+
+/** Every field optional (omitted = unchanged); null on a timing field = back to the team default. */
+export const notifyPrefsSchema = z.object({
+  whatsapp: personSchema.shape.whatsapp,
+  notifyTarget: z.enum(['default', 'group', 'dm'], { error: 'Choose where nudges go' }).optional(),
+  notifyGroupId: z.preprocess(blankToNull,
+    z.string({ error: 'Choose a WhatsApp group' }).trim().regex(/^[\w-]+@g\.us$/, 'Choose a WhatsApp group').nullable().optional()),
+  leadMinutes: minutes(1, 1440).nullable().optional(),
+  repeatMinutes: minutes(5, 1440).nullable().optional(),
+  quietHours: quietHoursSchema().nullable().optional(),
+});
+
+/** The fields only the person themselves (or the superadmin) may change after the person was created. */
+export const NOTIFY_FIELDS = ['whatsapp', 'notifyTarget', 'notifyGroupId', 'leadMinutes', 'repeatMinutes', 'quietHours'] as const;
+
+/** Updates a person's own notification settings (where nudges go, WhatsApp number, timing). Validated on every write. */
+export function updateNotifyPrefs(db: DB, id: number, input: unknown): { before: PersonRow; after: PersonRow } {
+  const before = getPerson(db, id);
+  if (!before) throw new StoreError('not_found', 'person not found');
+  const v = parseOrThrow(notifyPrefsSchema, input);
+  const pick = <K extends keyof typeof v>(k: K, cur: PersonRow[K & keyof PersonRow]) => (v[k] === undefined ? cur : v[k]);
+  const whatsapp = pick('whatsapp', before.whatsapp) as string | null;
+  const target = (v.notifyTarget ?? before.notifyTarget) as NotifyTarget;
+  const groupId = pick('notifyGroupId', before.notifyGroupId) as string | null;
+  if (target === 'group' && !groupId) throw new StoreError('validation', 'validation failed', { notifyGroupId: 'Choose a WhatsApp group' });
+  if (target === 'dm' && !whatsapp) throw new StoreError('validation', 'validation failed', { whatsapp: 'Add your WhatsApp number to get direct messages' });
+  const lead = pick('leadMinutes', before.leadMinutes) as number | null;
+  const repeat = pick('repeatMinutes', before.repeatMinutes) as number | null;
+  const quiet = pick('quietHours', before.quietHours) as QuietHours | null;
+  db.prepare(
+    `UPDATE people SET whatsapp = ?, notify_target = ?, notify_group_id = ?, lead_minutes = ?, repeat_minutes = ?, quiet_hours = ?, updated_at = ?
+     WHERE id = ?`,
+  ).run(whatsapp, target, target === 'group' ? groupId : null, lead, repeat, quiet ? JSON.stringify(quiet) : null, nowIso(), id);
+  return { before, after: getPerson(db, id)! };
 }
 
 /** Soft delete: the person and their tasks stay, but they can no longer sign in or be nudged. */

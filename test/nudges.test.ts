@@ -18,7 +18,7 @@ const settings = (o: Partial<TaskSettings> & { appName?: string } = {}) => ({ ..
 
 const person = (o: Partial<PersonRow> = {}): PersonRow => ({
   id: 1, email: 'ann@example.com', name: 'Ann', whatsapp: NUM, role: 'member', active: true, notifyTarget: 'default',
-  notifyGroupId: null, createdAt: 't', updatedAt: 't', ...o,
+  notifyGroupId: null, leadMinutes: null, repeatMinutes: null, quietHours: null, createdAt: 't', updatedAt: 't', ...o,
 });
 
 const task = (o: Partial<TaskRow> = {}): TaskRow => ({

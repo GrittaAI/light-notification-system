@@ -113,7 +113,12 @@ describe('roles in the Nudge server', () => {
     expect((await t.request('DELETE', `/api/people/${x.id}`, { cookie: sup })).status).toBe(200);
     expect(getPersonByEmail(t.db, 'x@example.com')?.active).toBe(false);
     // members can be updated and deactivated by admins
-    expect((await t.request('PUT', `/api/people/${m.id}`, { cookie: adm, body: { email: m.email, name: 'Mm', notifyTarget: 'dm' } })).json.notifyTarget).toBe('dm');
+    expect((await t.request('PUT', `/api/people/${m.id}`, { cookie: adm, body: { email: m.email, name: 'Mm' } })).json.name).toBe('Mm');
+    // where nudges go and the WhatsApp number belong to the person (and the superadmin), not to other admins
+    expect((await t.request('PUT', `/api/people/${m.id}`, { cookie: adm, body: { email: m.email, name: 'Mm', notifyTarget: 'dm' } })).status).toBe(403);
+    expect((await t.request('PUT', `/api/people/${m.id}`, { cookie: adm, body: { email: m.email, name: 'Mm', whatsapp: '919800000077' } })).status).toBe(403);
+    expect((await t.request('PUT', `/api/people/${m.id}`, { cookie: adm, body: { email: m.email, name: 'Mm', notifyTarget: m.notifyTarget, whatsapp: m.whatsapp } })).status).toBe(200);
+    expect((await t.request('PUT', `/api/people/${m.id}`, { cookie: sup, body: { email: m.email, name: 'Mm', notifyTarget: 'group', notifyGroupId: '120363000000000099@g.us' } })).json.notifyTarget).toBe('group');
     expect((await t.request('DELETE', `/api/people/${m.id}`, { cookie: adm })).status).toBe(200);
     const actions = (t.db.prepare(`SELECT action FROM audit_log`).all() as { action: string }[]).map((r) => r.action);
     expect(actions).toEqual(expect.arrayContaining(['person_create', 'person_update', 'person_deactivate']));

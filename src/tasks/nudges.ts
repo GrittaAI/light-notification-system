@@ -34,6 +34,13 @@ export interface Digest {
   newTaskIds: string[];
   target: DigestTarget;
   message: string;
+  /** The owner's repeat interval (personal or team default): next_digest_at = sent time + this. */
+  repeatMinutes: number;
+}
+
+/** The settings that apply to one person: their own timing and quiet hours where set, else the team default. */
+export function effectiveSettings<S extends TaskSettings>(p: PersonRow, s: S): S {
+  return { ...s, leadMinutes: p.leadMinutes ?? s.leadMinutes, repeatMinutes: p.repeatMinutes ?? s.repeatMinutes, quietHours: p.quietHours ?? s.quietHours };
 }
 
 // ---------- formatting ----------
@@ -123,7 +130,8 @@ export function targetFor(p: PersonRow, s: DigestSettings): { target: DigestTarg
 
 /**
  * Pure: which digests to send at `now`. No I/O, no clock reads.
- * An owner gets one when any nudgeable task was never alerted, or their repeat timer has passed, and quiet hours are off.
+ * An owner gets one when any nudgeable task was never alerted, or their repeat timer has passed, and their quiet hours
+ * are off. Lead time, repeat and quiet hours are per person (falling back to the team settings).
  * Such a digest also lists tasks that become nudgeable within `mergeAheadMinutes` (never the reason for a digest).
  * `onSkip` is told about owners that are due but have no usable target.
  */
@@ -135,12 +143,13 @@ export function computeDigests(
   settings: DigestSettings,
   onSkip?: (ownerId: number, reason: string) => void,
 ): Digest[] {
-  if (inQuietHours(now, settings.quietHours)) return [];
   const out: Digest[] = [];
   for (const p of people) {
     if (!p.active) continue;
+    const es = effectiveSettings(p, settings);
+    if (inQuietHours(now, es.quietHours)) continue;
     const mine = tasksByOwner.get(p.id) ?? [];
-    const nudgeable = mine.filter((t) => isNudgeable(t, now, settings.leadMinutes));
+    const nudgeable = mine.filter((t) => isNudgeable(t, now, es.leadMinutes));
     if (nudgeable.length === 0) continue;
     const next = nudgeStateByOwner.get(p.id)?.nextDigestAt ?? null;
     const newOnes = nudgeable.filter((t) => t.firstAlertSentAt === null);
@@ -149,7 +158,7 @@ export function computeDigests(
     // The digest is due anyway (decided only by tasks nudgeable NOW, so merging can never delay an alert).
     // Pull in tasks that become nudgeable within the look-ahead window: one message instead of pings minutes apart.
     const ahead = new Date(now.getTime() + settings.mergeAheadMinutes * 60_000);
-    const listed = (settings.mergeAheadMinutes > 0 ? mine.filter((t) => isNudgeable(t, ahead, settings.leadMinutes)) : nudgeable)
+    const listed = (settings.mergeAheadMinutes > 0 ? mine.filter((t) => isNudgeable(t, ahead, es.leadMinutes)) : nudgeable)
       .sort((a, b) => Date.parse(a.dueAt!) - Date.parse(b.dueAt!) || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
     const resolved = targetFor(p, settings);
     if ('skip' in resolved) {
@@ -162,6 +171,7 @@ export function computeDigests(
       newTaskIds: listed.filter((t) => t.firstAlertSentAt === null).map((t) => t.id),
       target: resolved.target,
       message: buildMessage(listed, now, resolved.who, settings.appName ?? 'Pushup Nudge'),
+      repeatMinutes: es.repeatMinutes,
     });
   }
   return out;
@@ -188,7 +198,8 @@ export function previewDigest(person: PersonRow, tasks: readonly TaskRow[], now:
   const byDue = (a: TaskRow, b: TaskRow) => Date.parse(a.dueAt!) - Date.parse(b.dueAt!) || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
   const ahead = new Date(now.getTime() + settings.mergeAheadMinutes * 60_000);
   let mode: PreviewMode = 'due';
-  let listed = tasks.filter((t) => isNudgeable(t, ahead, settings.leadMinutes)).sort(byDue);
+  const lead = effectiveSettings(person, settings).leadMinutes;
+  let listed = tasks.filter((t) => isNudgeable(t, ahead, lead)).sort(byDue);
   if (listed.length === 0) {
     mode = 'upcoming';
     listed = tasks.filter((t) => t.status !== 'done' && t.deletedAt === null && t.dueAt !== null).sort(byDue);
@@ -247,8 +258,8 @@ export async function runTaskNudges(db: DB, deps: NudgeDeps, now: Date = new Dat
     result.digests = digests.length;
 
     const nowIso = now.toISOString();
-    const nextIso = new Date(now.getTime() + settings.repeatMinutes * 60_000).toISOString();
     for (const d of digests) {
+      const nextIso = new Date(now.getTime() + d.repeatMinutes * 60_000).toISOString();
       try {
         if (d.target.type === 'dm') await deps.whatsapp.sendDirectMessage(d.target.chatId, d.message);
         else await deps.whatsapp.sendGroupMessage(d.target.chatId, d.message, d.target.mentions);

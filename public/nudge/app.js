@@ -2,7 +2,7 @@
 // Icons are Lucide symbols from icons.svg (ISC licence). Every time shown is Asia/Kolkata (see sync-core.js).
 // Layout: compact (< 840px) top app bar + FAB; expanded (>= 840px) navigation drawer; large (>= 1200px) list + detail pane.
 import * as idb from './idb.js';
-import { nudgePreviewBlock, renderAdminPage } from './admin.js';
+import { renderAdminPage, renderNudgeSettingsPage } from './admin.js';
 import {
   applyActionLocal, applyPushed, checklistProgress, diffOutbox, dueChip, enqueue, mergeOutbox, newOwnerIds, fmtDateTime, fmtRelative, fmtTime, groupTasks,
   isoToIstInput, isSnoozed, istAt, istInputToIso, istParts, mergePull, newTask, pendingTaskIds, pruneInvisible, pushOutbox, putBody,
@@ -720,6 +720,8 @@ function route() {
   if (m) {
     try { return { name: 'task', id: decodeURIComponent(m[1]) }; } catch { return { name: 'home' }; } // malformed escape: go home
   }
+  const nm = /^#\/nudges(?:\/(\d+))?/.exec(location.hash);
+  if (nm) return { name: 'nudges', person: nm[1] ? Number(nm[1]) : null };
   const am = /^#\/admin(?:\/([a-z]+))?/.exec(location.hash);
   if (am) return { name: 'admin', tab: am[1] || 'people' };
   return { name: 'home' };
@@ -734,7 +736,7 @@ function renderAll(soft) {
   renderStatus();
   const split = layout() === 'large' && r.name === 'task';
   view.app.classList.toggle('with-detail', split);
-  const pageKey = r.name + (r.id || r.tab || '') + (split ? '|split' : '');
+  const pageKey = r.name + (r.id || r.tab || r.person || '') + (split ? '|split' : '');
   if (soft && view.route === pageKey) {
     renderHomeList();
     renderDrawerCounts();
@@ -744,6 +746,7 @@ function renderAll(soft) {
   view.route = pageKey;
   renderNav(r);
   if (r.name === 'admin') renderAdmin(r);
+  else if (r.name === 'nudges') renderNudges(r);
   else if (r.name === 'task' && !split) renderTask(r.id);
   else {
     renderHome();
@@ -776,7 +779,7 @@ function buildShell() {
     h('div', { class: 'nav-label' }, 'Lists'), view.drawerLists,
     h('div', { class: 'sheet-divider' }),
     admin && h('a', { class: 'nav-item', href: '#/admin', 'data-nav': 'admin' }, icon('settings'), h('span', { class: 'nav-text' }, 'Admin')),
-    h('button', { type: 'button', class: 'nav-item', onclick: profileSheet }, icon('bell-ring'), h('span', { class: 'nav-text' }, 'My nudges')),
+    h('a', { class: 'nav-item', href: '#/nudges', 'data-nav': 'nudges' }, icon('bell-ring'), h('span', { class: 'nav-text' }, 'My nudges')),
     h('div', { class: 'user-card' }, h('span', { class: 'avatar' }, initials(S.me.name || S.me.email)),
       h('span', { class: 'li-body' }, h('span', { class: 'title-s' }, S.me.name || S.me.email), h('span', { class: 'small muted' }, S.me.email)),
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Sign out', onclick: signOut }, icon('log-out'))));
@@ -793,20 +796,23 @@ function renderNav(r) {
   clear(view.drawerLists);
   for (const o of S.owners) {
     const mine = o.id === myOwnerId();
-    view.drawerLists.append(h('button', { type: 'button', class: 'nav-item', 'data-owner': o.id, 'aria-current': String(r.name !== 'admin' && o.id === S.ownerId), onclick: () => selectOwner(o.id) },
+    view.drawerLists.append(h('button', { type: 'button', class: 'nav-item', 'data-owner': o.id, 'aria-current': String((r.name === 'home' || r.name === 'task') && o.id === S.ownerId), onclick: () => selectOwner(o.id) },
       h('span', { class: 'avatar' }, initials(o.name)), h('span', { class: 'nav-text' }, mine ? 'My tasks' : o.name),
       o.level === 'view' && h('span', { class: 'sr-only' }, 'view only'), o.level === 'view' && icon('eye', 'xs'),
       h('span', { class: 'nav-count' }, String(openCount(o.id) || ''))));
   }
   const adm = view.drawer.querySelector('[data-nav="admin"]');
-  if (adm) adm.setAttribute('aria-current', r.name === 'admin' ? 'page' : 'false');
+  if (adm) adm.setAttribute('aria-current', r.name === 'admin' || (r.name === 'nudges' && r.person !== null) ? 'page' : 'false');
+  const nud = view.drawer.querySelector('[data-nav="nudges"]');
+  if (nud) nud.setAttribute('aria-current', r.name === 'nudges' && r.person === null ? 'page' : 'false');
   // top bar: on phones the title is the list switcher
-  const t = r.name === 'admin' ? 'Admin' : listTitle();
+  const page = r.name === 'admin' ? 'Admin' : r.name === 'nudges' ? (r.person === null ? 'My nudges' : 'Nudge settings') : null;
+  const t = page || listTitle();
   view.title.textContent = t;
   const o = ownerOf(S.ownerId);
   fill(view.who, h('span', { class: 'title-l' }, t), S.owners.length > 1 && icon('chevrons-up-down', 'sm'));
-  view.who.hidden = r.name === 'admin';
-  view.title.hidden = r.name !== 'admin' && layout() === 'compact';
+  view.who.hidden = !!page;
+  view.title.hidden = !page && layout() === 'compact';
   view.header.hidden = r.name === 'task' && layout() !== 'large';
   view.fab.hidden = r.name !== 'home' && !(r.name === 'task' && layout() === 'large') || S.ownerId === null || !canEditOwner(S.ownerId);
   const fab2 = view.drawer.querySelector('#fab-new-drawer');
@@ -852,51 +858,11 @@ function openMenu() {
       h('div', { class: 'li-body' }, h('span', { class: 'title-m' }, S.me.name || S.me.email), h('span', { class: 'muted' }, S.me.email))),
     h('div', { class: 'list' },
       S.owners.length > 1 && listItem({ lead: icon('users'), head: 'Switch list', trail: icon('chevron-right', 'sm'), onclick: () => ownersSheet() }),
-      listItem({ lead: icon('bell-ring'), head: 'My nudges', sub: 'Where nudges go · send a test', onclick: () => { close(); profileSheet(); } }),
+      listItem({ lead: icon('bell-ring'), head: 'My nudges', sub: 'Timing, quiet hours, where nudges go · test', onclick: () => { close(); location.hash = '#/nudges'; } }),
       isAdmin() && listItem({ lead: icon('settings'), head: 'Admin', sub: 'People, access and notification settings', onclick: () => { close(); location.hash = '#/admin'; } }),
       listItem({ lead: icon('refresh-cw'), head: 'Sync now', onclick: () => { close(); sync('manual'); } }),
       h('div', { class: 'sheet-divider' }),
       listItem({ lead: icon('log-out'), head: 'Sign out', onclick: () => { close(); signOut(); } })));
-}
-
-function nudgeLabel(t) {
-  if (t.target === 'none') return 'Not set up (create your task list first)';
-  const where = t.target === 'dm' ? 'Direct WhatsApp message to you' : t.target === 'group' ? 'A WhatsApp group chosen by your admin' : 'The team WhatsApp group';
-  return t.configured ? where : `${where}, not set up yet`;
-}
-
-async function profileSheet() {
-  const content = h('div', {});
-  const close = openSheet(content, { label: 'My nudges' });
-  const target = h('span', { class: 'li-val' }, 'Loading…');
-  const preview = h('div', {});
-  content.append(
-    h('div', { class: 'sheet-head' }, h('span', { class: 'avatar' }, initials(S.me.name || S.me.email)),
-      h('div', { class: 'li-body' }, h('span', { class: 'title-m' }, S.me.name || S.me.email), h('span', { class: 'muted' }, S.me.email)),
-      h('span', { class: 'pill' + (S.me.role === 'member' ? '' : ' admin') }, cap(S.me.role))),
-    h('div', { class: 'sheet-body' },
-      h('div', { class: 'card prop-list' }, listItem({ lead: icon('send'), head: 'Nudges go to', sub: target })),
-      h('div', { class: 'stack' },
-        h('div', { class: 'block-label' }, icon('flask-conical', 'sm'), 'Test my nudges'),
-        h('p', { class: 'muted' }, 'See exactly the WhatsApp message you would get right now, then send it as a test. Your real nudge timing does not change.'),
-        preview)),
-    h('div', { class: 'sheet-actions' },
-      h('button', { type: 'button', class: 'btn text', onclick: () => { close(); signOut(); } }, icon('log-out'), 'Sign out'),
-      h('span', { class: 'spacer' }),
-      h('button', { type: 'button', class: 'btn tonal', onclick: () => close() }, 'Done')));
-  if (S.me.personId === null) {
-    preview.append(h('div', { class: 'callout' }, icon('info'), h('span', {}, 'Create your task list first, then you can test your nudges.')));
-  } else {
-    preview.append(nudgePreviewBlock(ctxForAdmin(), { personId: null, label: 'Preview my nudge' }));
-  }
-  try {
-    const t = await api('GET', '/api/app/nudge-target');
-    S.meta.nudgeTarget = t;
-    persist({ meta: { nudgeTarget: t } });
-    target.textContent = nudgeLabel(t);
-  } catch {
-    target.textContent = S.meta.nudgeTarget ? nudgeLabel(S.meta.nudgeTarget) : 'Available when online';
-  }
 }
 
 async function signOut() {
@@ -1309,6 +1275,12 @@ async function loadActivity(id, refs) {
 
 // ---------- admin ----------
 function ctxForAdmin() { return { h, clear, icon, api, toast, openSheet, sheetHead, listItem, S }; }
+function renderNudges(r) {
+  clear(view.detail);
+  view.content.className = 'content page';
+  renderNudgeSettingsPage(ctxForAdmin(), view.content, r.person === S.me.personId ? null : r.person);
+}
+
 function renderAdmin(r) {
   clear(view.detail);
   view.content.className = 'content page';

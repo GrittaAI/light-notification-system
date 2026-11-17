@@ -94,6 +94,9 @@ CREATE TABLE IF NOT EXISTS people (
   active          INTEGER NOT NULL DEFAULT 1,
   notify_target   TEXT NOT NULL DEFAULT 'default' CHECK (notify_target IN ('default', 'group', 'dm')),
   notify_group_id TEXT,                   -- ends in @g.us when notify_target = 'group'
+  lead_minutes    INTEGER,                -- personal nudge timing; NULL = the team default (tasks.* settings)
+  repeat_minutes  INTEGER,
+  quiet_hours     TEXT,                   -- JSON {enabled,start,end}; NULL = the team default
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL,
   added_by        TEXT                    -- who created the person; NULL for rows migrated without it
@@ -219,6 +222,10 @@ function addMissingColumns(db: DB): void {
     if (!hasColumn(db, 'people', 'added_by')) {
       db.exec(`ALTER TABLE people ADD COLUMN added_by TEXT`);
     }
+    // Personal nudge timing (NULL = team default).
+    if (!hasColumn(db, 'people', 'lead_minutes')) db.exec(`ALTER TABLE people ADD COLUMN lead_minutes INTEGER`);
+    if (!hasColumn(db, 'people', 'repeat_minutes')) db.exec(`ALTER TABLE people ADD COLUMN repeat_minutes INTEGER`);
+    if (!hasColumn(db, 'people', 'quiet_hours')) db.exec(`ALTER TABLE people ADD COLUMN quiet_hours TEXT`);
     // Which product issued the session: a reminders-console session is never valid in Nudge and vice versa.
     if (!hasColumn(db, 'admin_sessions', 'product')) {
       db.exec(`ALTER TABLE admin_sessions ADD COLUMN product TEXT NOT NULL DEFAULT 'reminders'`);

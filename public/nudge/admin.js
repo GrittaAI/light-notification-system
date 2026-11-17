@@ -83,7 +83,7 @@ const cardTitle = (ctx, ic, text, extra) => ctx.h('div', { class: 'block-label' 
 
 async function loadGroups(ctx, refresh) {
   try {
-    groupState.list = await ctx.api('GET', '/api/nudge/groups' + (refresh ? '?refresh=1' : ''));
+    groupState.list = await ctx.api('GET', '/api/app/groups' + (refresh ? '?refresh=1' : ''));
     groupState.error = null;
   } catch (e) {
     if (e.network) throw e;
@@ -315,13 +315,13 @@ function personSheet(ctx, person, settings, onDone) {
         h('button', { type: 'button', role: 'radio', 'aria-checked': String(st.target === v), 'data-v': v, onclick: () => { st.target = v; draw(); } }, icon(ic, 'xs'), l)));
     fill(content,
       ...ctx.sheetHead(person ? (ownerRow ? 'Your details' : person.name) : 'Add person',
-        ownerRow ? 'Name, WhatsApp and where your nudges go can change. Email and role are fixed.' : person ? person.email : 'They sign in with a code sent to their email.'),
+        ownerRow ? 'Your name can change here; email and role are fixed. Notification settings are in My nudges.' : person ? person.email : 'They sign in with a code sent to their email.'),
       h('div', { class: 'sheet-body' },
         field(ctx, 'Name', name, { error: err.name, id: 'p-name' }),
         field(ctx, 'Email', email, { error: err.email, id: 'p-email', help: adminRow ? "Only the owner can change an admin's email." : null }),
-        field(ctx, 'WhatsApp number', wa, { error: err.whatsapp, id: 'p-wa', help: 'With country code, e.g. 919812345678. Needed to be tagged in a group or to get a direct message.' }),
-        field(ctx, 'Role', role, { error: err.role, help: actorSuper ? 'Admins can manage people, access and settings.' : 'Only the owner can make someone an admin.' }),
-        h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Nudges go to'), seg,
+        !person && field(ctx, 'WhatsApp number', wa, { error: err.whatsapp, id: 'p-wa', help: 'With country code, e.g. 919812345678. They can change it later in My nudges.' }),
+        field(ctx, 'Role', role, { error: err.role, help: actorSuper ? 'Admins can manage people and access. Team defaults stay with the owner.' : 'Only the owner can make someone an admin.' }),
+        !person && h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Nudges go to'), seg,
           st.target === 'default' && h('p', { class: 'small muted' }, settings.defaultGroupId ? `The team group${groupName(settings.defaultGroupId) ? ` (${groupName(settings.defaultGroupId)})` : ''}, tagging them.` : 'No team group is set yet (Admin → Notifications).'),
           st.target === 'dm' && h('p', { class: 'small muted' }, 'A direct WhatsApp message to their number.'),
           st.target === 'group' && groupPicker(ctx, { value: st.groupId || null, onPick: (id) => { st.groupId = id || ''; } }),
@@ -332,6 +332,9 @@ function personSheet(ctx, person, settings, onDone) {
         h('button', { type: 'button', class: 'btn', id: 'save-person', disabled: st.busy, onclick: save }, person ? 'Save' : 'Add person')),
       person && h('div', { class: 'list' },
         h('div', { class: 'sheet-divider' }),
+        ctx.listItem({ lead: icon('bell-ring'), head: actorSuper ? 'Notification settings' : 'View notification settings',
+          sub: `${person.whatsapp ? '+' + person.whatsapp : 'No WhatsApp number'} · ${targetLabel(person, settings.defaultGroupId)}${actorSuper || ownerRow ? '' : ' · set by them'}`,
+          trail: icon('chevron-right', 'sm'), onclick: () => { close(); location.hash = '#/nudges/' + person.id; } }),
         person.active && ctx.listItem({ lead: icon('flask-conical'), head: 'Test their nudge', sub: 'Preview the real message and send it as a test', onclick: previewSheet }),
         person.active && h('button', { type: 'button', class: 'list-item two clickable', id: 'test-nudge', onclick: (ev) => testNudge(ev.currentTarget) },
           h('span', { class: 'li-lead' }, icon('send')), h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, 'Send setup test'), h('span', { class: 'li-sub' }, 'A one-line message to check where nudges arrive'))),
@@ -344,8 +347,9 @@ function personSheet(ctx, person, settings, onDone) {
 
   async function save() {
     st.busy = true; st.errors = {};
-    const payload = { name: st.name, email: st.email, whatsapp: st.whatsapp.trim() === '' ? null : st.whatsapp, notifyTarget: st.target };
-    if (st.target === 'group') payload.notifyGroupId = st.groupId || null;
+    // WhatsApp number and where nudges go are set when adding someone; afterwards they belong to the person (My nudges)
+    const payload = person ? { name: st.name, email: st.email } : { name: st.name, email: st.email, whatsapp: st.whatsapp.trim() === '' ? null : st.whatsapp, notifyTarget: st.target };
+    if (!person && st.target === 'group') payload.notifyGroupId = st.groupId || null;
     if (!ownerRow && !adminRow) payload.role = st.role;
     try {
       if (person) await api('PUT', `/api/people/${person.id}`, payload);
@@ -464,6 +468,7 @@ async function renderNotifications(ctx) {
   let errors = {};
   let testPerson = (people.find((p) => p.active && p.id === ctx.S.me.personId) || people.find((p) => p.active) || {}).id;
   const preview = h('span', { id: 'settings-preview', 'aria-live': 'polite' });
+  const ro = ctx.S.me.role !== 'superadmin'; // team defaults: the owner (superadmin) only
   const dirtyText = h('span', { class: 'spacer small' });
   const saveBtn = h('button', { type: 'button', class: 'btn', id: 'save-settings' }, icon('check'), 'Save');
   const resetBtn = h('button', { type: 'button', class: 'btn text', onclick: () => { Object.assign(st, JSON.parse(saved)); errors = {}; draw(); } }, 'Discard');
@@ -483,8 +488,8 @@ async function renderNotifications(ctx) {
       if (n === undefined || n === st[key]) return;
       st[key] = n; out.textContent = mins(n); minus.disabled = n === list[0]; plus.disabled = n === list[list.length - 1]; upd();
     };
-    const minus = h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Decrease ${label}`, disabled: st[key] === list[0], onclick: () => move(-1) }, icon('minus', 'sm'));
-    const plus = h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Increase ${label}`, disabled: st[key] === list[list.length - 1], onclick: () => move(1) }, icon('plus', 'sm'));
+    const minus = h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Decrease ${label}`, disabled: ro || st[key] === list[0], onclick: () => move(-1) }, icon('minus', 'sm'));
+    const plus = h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Increase ${label}`, disabled: ro || st[key] === list[list.length - 1], onclick: () => move(1) }, icon('plus', 'sm'));
     return h('div', { class: 'setting' }, h('span', { class: 'icon-chip' }, icon(ic, 'sm')),
       h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, label), h('span', { class: 'li-sub' }, sub), errors[key] && h('span', { class: 'error-text' }, errors[key])),
       h('span', { class: 'stepper' }, minus, out, plus));
@@ -498,10 +503,10 @@ async function renderNotifications(ctx) {
   };
   const draw = () => {
     const qh = st.quietHours;
-    const toggle = h('input', { id: 'q-enabled', class: 'switch', type: 'checkbox', role: 'switch', 'aria-label': 'Quiet hours', onchange: (ev) => { qh.enabled = ev.target.checked; draw(); } });
+    const toggle = h('input', { id: 'q-enabled', class: 'switch', type: 'checkbox', role: 'switch', 'aria-label': 'Quiet hours', disabled: ro, onchange: (ev) => { qh.enabled = ev.target.checked; draw(); } });
     toggle.checked = qh.enabled;
     const time = (key, label, ic) => {
-      const input = h('input', { id: 'q-' + key, class: 'input time-input', type: 'time', 'aria-label': `${label} (IST)`, oninput: (ev) => { qh[key] = ev.target.value; upd(); } });
+      const input = h('input', { id: 'q-' + key, class: 'input time-input', type: 'time', 'aria-label': `${label} (IST)`, disabled: ro, oninput: (ev) => { qh[key] = ev.target.value; upd(); } });
       input.value = qh[key];
       return h('label', { class: 'setting time-row', for: 'q-' + key }, h('span', { class: 'icon-chip' }, icon(ic, 'sm')), h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, label)), input);
     };
@@ -512,10 +517,13 @@ async function renderNotifications(ctx) {
         options: people.filter((p) => p.active).map((p) => personOption(ctx, p, ctx.S.me.personId)), onChange: (v) => { testPerson = v; drawTest(); } }), { id: 'test-person' }),
       testPerson ? nudgePreviewBlock(ctx, { personId: testPerson, label: 'Preview their nudge' }) : h('p', { class: 'muted' }, 'Add a person first.'));
     fill(body, 
-      h('div', { class: 'callout info' }, icon('bell-ring'), preview),
+      h('div', { class: 'callout info' }, icon('bell-ring'), h('span', {}, h('strong', {}, 'Team defaults. '), preview)),
+      h('p', { class: 'small muted' }, ro
+        ? 'Only the owner can change team defaults. Everyone can set their own timing, quiet hours and where nudges go in My nudges.'
+        : 'These apply to anyone who has not set their own timing or quiet hours in My nudges.'),
       h('div', {}, cardTitle(ctx, 'send', 'Delivery'),
         h('div', { class: 'card' },
-          h('button', { type: 'button', class: 'setting list-item clickable', id: 'default-group', onclick: groupSheet },
+          h('button', { type: 'button', class: 'setting list-item clickable', id: 'default-group', disabled: ro, onclick: groupSheet },
             h('span', { class: 'icon-chip' }, icon('users', 'sm')),
             h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, 'Team group'),
               h('span', { class: 'li-sub' }, gName || 'Not set: people on "Team group" get no nudges'), errors.defaultGroupId && h('span', { class: 'error-text' }, errors.defaultGroupId)),
@@ -538,7 +546,7 @@ async function renderNotifications(ctx) {
           h('p', { class: 'muted' }, 'See the exact WhatsApp message a person would get right now, then send it as a test.'),
           testBox)),
       errors._form && h('div', { class: 'callout danger', role: 'alert' }, icon('alert-triangle'), h('span', {}, errors._form)),
-      h('div', { class: 'save-bar' }, dirtyText, resetBtn, saveBtn));
+      !ro && h('div', { class: 'save-bar' }, dirtyText, resetBtn, saveBtn));
     drawTest();
     upd();
   };
@@ -590,4 +598,173 @@ async function renderAudit(ctx) {
     h('span', { class: 'li-trail' }, chev));
     return h('div', { class: 'audit-row' }, btn, pad);
   })));
+}
+
+// ---------- My nudges: personal notification settings ----------
+
+/**
+ * Personal notification settings page (#/nudges, or #/nudges/<id> for admins viewing someone). The person and the
+ * superadmin can change them; other admins see them read-only. Timing and quiet hours left unset follow the team
+ * defaults. `personId` null = yourself.
+ */
+export async function renderNudgeSettingsPage(ctx, mount, personId) {
+  const { h, icon, api, S, toast } = ctx;
+  const body = h('div', { class: 'admin-body' });
+  fill(mount, body);
+  const offline = () => fill(body, h('div', { class: 'empty' }, h('div', { class: 'icon-wrap' }, icon('cloud-off', 'xl')), h('h2', {}, 'Settings need a connection'),
+    h('p', {}, 'Your notification settings can be viewed and changed online. Your tasks still work offline.'),
+    h('button', { type: 'button', class: 'btn tonal', onclick: () => renderNudgeSettingsPage(ctx, mount, personId) }, icon('refresh-cw'), 'Try again')));
+  if (!navigator.onLine || !S.online) { offline(); return; }
+  if (personId === null && S.me.personId === null) {
+    fill(body, h('div', { class: 'empty' }, h('div', { class: 'icon-wrap' }, icon('list-checks', 'xl')), h('h2', {}, 'Create your task list first'),
+      h('p', {}, 'Your nudge settings belong to your task list.'), h('a', { class: 'btn tonal', href: '#/' }, 'Back to tasks')));
+    return;
+  }
+  fill(body, h('div', { 'aria-hidden': 'true' }, h('div', { class: 'skeleton' }), h('div', { class: 'skeleton' })));
+  let data;
+  try {
+    data = await api('GET', '/api/app/notify-settings' + (personId === null ? '' : `?person=${personId}`));
+    await loadGroups(ctx, false);
+  } catch (e) {
+    if (e.network) { offline(); return; }
+    fill(body, h('div', { class: 'callout danger', role: 'alert' }, icon('alert-triangle'), h('span', {}, e.message)));
+    return;
+  }
+  const self = data.person.id === S.me.personId;
+  const ro = !data.canEdit;
+  const team = data.team;
+  const st = { ...data.prefs, whatsapp: data.prefs.whatsapp || '', notifyGroupId: data.prefs.notifyGroupId || null };
+  let saved = JSON.stringify(st);
+  let errors = {};
+  const dirtyText = h('span', { class: 'spacer small' });
+  const saveBtn = h('button', { type: 'button', class: 'btn', id: 'save-nudges' }, icon('check'), 'Save');
+  const discardBtn = h('button', { type: 'button', class: 'btn text', onclick: () => { Object.assign(st, JSON.parse(saved)); errors = {}; draw(); } }, 'Discard');
+  const upd = () => {
+    const dirty = JSON.stringify(st) !== saved;
+    saveBtn.disabled = !dirty;
+    discardBtn.hidden = !dirty;
+    dirtyText.textContent = dirty ? 'Unsaved changes' : 'All changes saved';
+  };
+  const teamQuiet = team.quietHours.enabled ? `${hhmm12(team.quietHours.start)} to ${hhmm12(team.quietHours.end)} IST` : 'off';
+
+  const timingRow = (key, label, ic) => {
+    const list = STEPS[key];
+    const val = () => (st[key] === null ? team[key] : st[key]);
+    const out = h('output', { 'aria-live': 'polite' }, mins(val()));
+    const sub = h('span', { class: 'li-sub' });
+    const resetBtn = h('button', { type: 'button', class: 'link-btn small', onclick: () => { st[key] = null; sync(); } }, 'Use team default');
+    const sync = () => {
+      out.textContent = mins(val());
+      const i = list.indexOf(val());
+      minus.disabled = ro || i <= 0;
+      plus.disabled = ro || (i !== -1 && i >= list.length - 1);
+      sub.textContent = st[key] === null ? `Team default (${mins(team[key])})` : `Your setting · team default is ${mins(team[key])}`;
+      resetBtn.hidden = ro || st[key] === null;
+      upd();
+    };
+    const move = (d) => {
+      const cur = val();
+      let i = list.indexOf(cur);
+      if (i === -1) i = list.findIndex((x) => x > cur) - (d > 0 ? 1 : 0);
+      const n = list[Math.min(list.length - 1, Math.max(0, i + d))];
+      if (n === undefined || n === cur) return;
+      st[key] = n === team[key] ? null : n;
+      sync();
+    };
+    const minus = h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Decrease ${label}`, onclick: () => move(-1) }, icon('minus', 'sm'));
+    const plus = h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Increase ${label}`, onclick: () => move(1) }, icon('plus', 'sm'));
+    const row = h('div', { class: 'setting' }, h('span', { class: 'icon-chip' }, icon(ic, 'sm')),
+      h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, label), sub, resetBtn, errors[key] && h('span', { class: 'error-text' }, errors[key])),
+      h('span', { class: 'stepper' }, minus, out, plus));
+    sync();
+    return row;
+  };
+
+  const groupSheet = () => {
+    const c = h('div', {});
+    const close = ctx.openSheet(c, { label: 'WhatsApp group', keepOpen: true });
+    c.append(...ctx.sheetHead('Choose a WhatsApp group', 'Your nudges go to this group, tagging you'),
+      h('div', { class: 'sheet-body' }, groupPicker(ctx, { value: st.notifyGroupId, onPick: (id) => { st.notifyGroupId = id; } })),
+      h('div', { class: 'sheet-actions' }, h('button', { type: 'button', class: 'btn', onclick: () => { close(); draw(); } }, 'Done')));
+  };
+
+  const draw = () => {
+    const wa = h('input', { id: 'n-wa', class: 'input', type: 'tel', inputmode: 'tel', placeholder: '919812345678', disabled: ro, oninput: (ev) => { st.whatsapp = ev.target.value; upd(); } });
+    wa.value = st.whatsapp;
+    const seg = h('div', { class: 'seg', id: 'n-target', role: 'radiogroup', 'aria-label': 'Where nudges go' },
+      [['default', 'Team group', 'users'], ['group', 'A group', 'message-circle'], ['dm', 'Direct', 'user']].map(([v, l, ic]) =>
+        h('button', { type: 'button', role: 'radio', 'aria-checked': String(st.notifyTarget === v), disabled: ro, onclick: () => { st.notifyTarget = v; if (v === 'group' && !st.notifyGroupId) groupSheet(); draw(); } }, icon(ic, 'xs'), l)));
+    const teamName = team.defaultGroupId ? (groupName(team.defaultGroupId) || 'the team group') : null;
+    const targetHelp = st.notifyTarget === 'default'
+      ? (teamName ? `Sent to ${teamName}, tagging ${self ? 'you' : data.person.name}.` : 'No team group is set yet, so these nudges cannot be delivered. Pick a group or Direct.')
+      : st.notifyTarget === 'dm' ? `A direct WhatsApp message to ${self ? 'your' : 'their'} number.` : null;
+    const qCustom = st.quietHours !== null;
+    const q = st.quietHours || team.quietHours;
+    const time = (k, label, ic) => {
+      const input = h('input', { id: 'nq-' + k, class: 'input time-input', type: 'time', disabled: ro, 'aria-label': label, oninput: (ev) => { st.quietHours = { ...st.quietHours, [k]: ev.target.value }; upd(); } });
+      input.value = q[k];
+      return h('label', { class: 'setting time-row', for: 'nq-' + k }, h('span', { class: 'icon-chip' }, icon(ic, 'sm')), h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, label)), input);
+    };
+    const toggle = h('input', { id: 'nq-enabled', class: 'switch', type: 'checkbox', role: 'switch', 'aria-label': 'Quiet hours', disabled: ro, onchange: (ev) => { st.quietHours = { ...q, enabled: ev.target.checked }; draw(); } });
+    toggle.checked = q.enabled;
+    const qSeg = h('div', { class: 'seg', id: 'nq-mode', role: 'radiogroup', 'aria-label': 'Quiet hours' },
+      [[false, 'Team default'], [true, 'My own']].map(([v, l]) => h('button', { type: 'button', role: 'radio', 'aria-checked': String(qCustom === v), disabled: ro,
+        onclick: () => { st.quietHours = v ? { ...team.quietHours } : null; draw(); } }, l)));
+    const groupBtn = h('button', { type: 'button', class: 'input picker-field', id: 'n-group', disabled: ro, onclick: groupSheet },
+      icon('message-circle', 'sm'), h('span', { class: 'pf-text' }, st.notifyGroupId ? (groupName(st.notifyGroupId) || st.notifyGroupId) : 'Choose a group…'), icon('chevron-down', 'sm'));
+    const canReset = !ro && (st.leadMinutes !== null || st.repeatMinutes !== null || st.quietHours !== null);
+    fill(body,
+      h('div', { class: 'row' },
+        !self && h('a', { class: 'icon-btn', href: '#/admin/people', 'aria-label': 'Back to people' }, icon('arrow-left')),
+        self ? h('p', { class: 'muted' }, 'How and when Pushup Nudge reminds you on WhatsApp. Anything you do not change follows the team defaults.')
+          : h('div', { class: 'li-body' }, h('h2', { class: 'title-l' }, `${data.person.name}’s nudges`), h('span', { class: 'muted small' }, data.person.email))),
+      ro && h('div', { class: 'callout info' }, icon('lock'), h('span', {}, `View only. Only ${data.person.name} or the owner can change these settings.`)),
+      !ro && !self && h('div', { class: 'callout info' }, icon('shield'), h('span', {}, `You are changing ${data.person.name}’s settings as the owner. They can change them too.`)),
+      h('div', {}, cardTitle(ctx, 'send', 'Where nudges go'),
+        h('div', { class: 'card card-pad stack' },
+          field(ctx, 'WhatsApp number', wa, { id: 'n-wa', error: errors.whatsapp, help: `With country code, e.g. 919812345678. Used to tag ${self ? 'you' : 'them'} in a group or to message ${self ? 'you' : 'them'} directly.` }),
+          h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Send to'), seg,
+            st.notifyTarget === 'group' && groupBtn,
+            targetHelp && h('p', { class: 'small muted' }, targetHelp),
+            errors.notifyGroupId && h('p', { class: 'error-text', role: 'alert' }, errors.notifyGroupId)))),
+      h('div', {}, cardTitle(ctx, 'timer', 'Timing'),
+        h('div', { class: 'card' },
+          timingRow('leadMinutes', 'First nudge', 'bell'),
+          timingRow('repeatMinutes', 'Then repeat every', 'refresh-cw'))),
+      h('div', {}, cardTitle(ctx, 'moon', 'Quiet hours'),
+        h('div', { class: 'card' },
+          h('div', { class: 'setting' }, h('span', { class: 'li-body' }, h('span', { class: 'li-sub' }, qCustom ? 'Your own quiet hours' : `Team default: ${teamQuiet}`)), qSeg),
+          qCustom && h('label', { class: 'setting', for: 'nq-enabled' }, h('span', { class: 'icon-chip' }, icon('moon', 'sm')),
+            h('span', { class: 'li-body' }, h('span', { class: 'li-head' }, 'Pause nudges'), h('span', { class: 'li-sub' }, q.enabled ? `${hhmm12(q.start)} to ${hhmm12(q.end)} IST, they resume after` : 'Off: nudges come around the clock')),
+            toggle),
+          qCustom && q.enabled && time('start', 'Starts (IST)', 'moon'),
+          qCustom && q.enabled && time('end', 'Ends (IST)', 'sunrise'),
+          errors.quietHours && h('p', { class: 'error-text card-pad' }, errors.quietHours))),
+      canReset && h('div', { class: 'row' }, h('button', { type: 'button', class: 'btn text', id: 'n-reset', onclick: () => { st.leadMinutes = null; st.repeatMinutes = null; st.quietHours = null; draw(); } }, icon('rotate-ccw'), 'Reset timing to team defaults')),
+      data.person.active && h('div', {}, cardTitle(ctx, 'flask-conical', 'Test'),
+        h('div', { class: 'card card-pad stack' },
+          h('p', { class: 'muted' }, `See the exact WhatsApp message ${self ? 'you' : data.person.name} would get right now (with saved settings), then send it as a test.`),
+          nudgePreviewBlock(ctx, { personId: self ? null : data.person.id, label: self ? 'Preview my nudge' : 'Preview their nudge' }))),
+      errors._form && h('div', { class: 'callout danger', role: 'alert' }, icon('alert-triangle'), h('span', {}, errors._form)),
+      !ro && h('div', { class: 'save-bar' }, dirtyText, discardBtn, saveBtn));
+    upd();
+  };
+  saveBtn.addEventListener('click', async () => {
+    errors = {};
+    saveBtn.disabled = true;
+    const payload = { ...st, whatsapp: st.whatsapp.trim() === '' ? null : st.whatsapp, notifyGroupId: st.notifyTarget === 'group' ? st.notifyGroupId : null };
+    if (!self) payload.personId = data.person.id;
+    try {
+      const r = await api('PUT', '/api/app/notify-settings', payload);
+      Object.assign(st, r.prefs, { whatsapp: r.prefs.whatsapp || '', notifyGroupId: r.prefs.notifyGroupId || null });
+      saved = JSON.stringify(st);
+      toast('Nudge settings saved');
+    } catch (e) {
+      errors = e.network ? { _form: errText(e) } : { ...((e.body && e.body.fields) || {}), ...(e.body && e.body.fields ? {} : { _form: e.message }) };
+    }
+    draw();
+    const first = body.querySelector('.error-text, .callout.danger');
+    if (first) first.scrollIntoView({ block: 'nearest' });
+  });
+  draw();
 }
