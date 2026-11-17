@@ -6,7 +6,7 @@ beforeAll(() => { process.env.LOG_LEVEL = 'error'; });
 
 const FILES: [string, string][] = [
   ['/', 'text/html; charset=utf-8'], ['/index.html', 'text/html; charset=utf-8'], ['/app.js', 'text/javascript; charset=utf-8'],
-  ['/sync-core.js', 'text/javascript; charset=utf-8'], ['/idb.js', 'text/javascript; charset=utf-8'], ['/admin.js', 'text/javascript; charset=utf-8'], ['/sw.js', 'text/javascript; charset=utf-8'],
+  ['/sync-core.js', 'text/javascript; charset=utf-8'], ['/idb.js', 'text/javascript; charset=utf-8'], ['/admin.js', 'text/javascript; charset=utf-8'], ['/voice-parse.js', 'text/javascript; charset=utf-8'], ['/sw.js', 'text/javascript; charset=utf-8'],
   ['/styles.css', 'text/css; charset=utf-8'], ['/icons.svg', 'image/svg+xml'], ['/logo.svg', 'image/svg+xml'],
   ['/manifest.webmanifest', 'application/manifest+json'], ['/icon-192.png', 'image/png'], ['/icon-512.png', 'image/png'],
   ['/icon-maskable-512.png', 'image/png'], ['/apple-touch-icon.png', 'image/png'],

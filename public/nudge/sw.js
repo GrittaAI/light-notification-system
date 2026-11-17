@@ -5,7 +5,7 @@
 const VERSION = '__SHELL_HASH__';
 const CACHE = `nudge-shell-${VERSION}`;
 const SHELL = [
-  '/', '/index.html', '/app.js', '/sync-core.js', '/idb.js', '/admin.js', '/styles.css', '/icons.svg', '/logo.svg',
+  '/', '/index.html', '/app.js', '/sync-core.js', '/idb.js', '/admin.js', '/voice-parse.js', '/styles.css', '/icons.svg', '/logo.svg',
   '/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/icon-maskable-512.png', '/apple-touch-icon.png',
 ];
 
