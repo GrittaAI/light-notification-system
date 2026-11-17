@@ -575,11 +575,25 @@ function newTaskSheet(opts) {
  * Always ends in the New task sheet for review; nothing is created here.
  */
 const VOICE_MAX_MS = 3 * 60_000;
+
+/** Where to re-allow the microphone: a page cannot ask again once the browser has blocked it. */
+function micHelp() {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad|iPod/.test(ua)) return 'On iPhone: tap “aA” in the address bar → Website Settings → Microphone → Allow. Also check Settings → Safari → Microphone.';
+  if (/Android/.test(ua)) return 'On Android Chrome: tap ⋮ → Settings → Site settings → Microphone, find this site and set it to Allow. Also check Android Settings → Apps → Chrome → Permissions → Microphone.';
+  if (/Edg\//.test(ua)) return 'In Edge: click the lock icon left of the address → Permissions for this site → Microphone → Allow, then reload.';
+  if (/Safari/.test(ua) && !/Chrome/.test(ua)) return 'In Safari: Safari menu → Settings for This Website → Microphone → Allow.';
+  return 'In Chrome: click the icon left of the address (lock or sliders) → Microphone → Allow, then reload the page. Also check that your computer allows the browser to use the microphone.';
+}
+
 function voiceSheet() {
   if (!voiceSupported || S.ownerId === null || !canEditOwner(S.ownerId)) return;
   const content = h('div', { class: 'voice' });
   let rec = null;
-  let state = 'listening'; // listening | stopping | understanding | closed | error
+  let state = 'listening'; // listening | paused | understanding | closed | error
+  let sessions = 0;
+  // Android Chrome only starts recognition right after a tap: a pause there waits for a tap instead of auto-restarting
+  const tapToResume = /Android/.test(navigator.userAgent);
   const finals = []; // finished phrases from every recognition session
   let sessionFinals = []; // finished phrases of the current session
   let interim = '';
@@ -591,7 +605,7 @@ function voiceSheet() {
   const live = h('p', { class: 'voice-text', 'aria-live': 'polite' });
   const status = h('p', { class: 'voice-status' }, 'Listening… tap Done when you finish');
   const doneBtn = h('button', { type: 'button', class: 'btn', id: 'voice-done', onclick: () => finish() }, icon('check'), 'Done');
-  const orb = h('button', { type: 'button', class: 'voice-orb listening', 'aria-label': 'Done speaking', onclick: () => finish() }, icon('mic'));
+  const orb = h('button', { type: 'button', class: 'voice-orb listening', 'aria-label': 'Done speaking', onclick: () => (state === 'paused' ? resume() : finish()) }, icon('mic'));
   const actions = h('div', { class: 'sheet-actions' }, h('button', { type: 'button', class: 'btn text', onclick: () => cancel() }, 'Cancel'), doneBtn);
   content.append(...sheetHead('Say a task'), h('div', { class: 'voice-body' }, orb, status, live,
     h('p', { class: 'voice-hint' }, 'Say the whole task, then tap Done. Try “Demo for Margin Sales tomorrow at 9:30 pm” or “kal shaam 6 baje client call”.')), actions);
@@ -645,14 +659,33 @@ function voiceSheet() {
     }
   }
 
+  function pause() {
+    state = 'paused';
+    orb.classList.remove('listening');
+    orb.setAttribute('aria-label', 'Keep talking');
+    status.textContent = transcript() ? 'Paused. Tap the mic to keep talking, or tap Done.' : 'Paused. Tap the mic and speak.';
+  }
+  function resume() {
+    if (state !== 'paused') return;
+    state = 'listening';
+    orb.classList.add('listening');
+    orb.setAttribute('aria-label', 'Done speaking');
+    status.textContent = 'Listening… tap Done when you finish';
+    startSession(); // runs inside the tap, so Android allows it
+  }
+
   function finish() {
-    if (state !== 'listening') return;
+    if (state !== 'listening' && state !== 'paused') return;
     const text = transcript();
     if (!text) { status.textContent = 'I haven’t heard anything yet. Speak, then tap Done.'; return; }
     understand(text);
   }
 
   const startSession = () => {
+    if (!window.isSecureContext) {
+      showError('The microphone only works on a secure page. Open Nudge over https (or at http://localhost on this computer), not a plain http network address.', false);
+      return;
+    }
     try {
       rec = new SpeechRec();
       rec.lang = 'en-IN';
@@ -663,6 +696,7 @@ function voiceSheet() {
       showError('Voice input is not available in this browser.', false);
       return;
     }
+    sessions += 1;
     sessionFinals = [];
     sessionHeard = false;
     sessionStart = Date.now();
@@ -687,13 +721,22 @@ function voiceSheet() {
     rec.onerror = (ev) => {
       if (state !== 'listening') return;
       if (ev.error === 'no-speech' || ev.error === 'aborted') return; // a pause: onend restarts
+      if (ev.error === 'not-allowed' && sessions > 1) { pause(); return; } // a restart without a tap was refused: not a real block
+      if (ev.error === 'not-allowed') {
+        showError(`Microphone access is blocked for this site, so the browser will not ask again. ${micHelp()} (code: not-allowed)`);
+        return;
+      }
+      const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+      const homeScreen = ios && (navigator.standalone || window.matchMedia('(display-mode: standalone)').matches);
       const msg = {
-        'not-allowed': 'Microphone access is blocked. Allow it in your browser settings, then try again.',
-        'service-not-allowed': 'Voice input is turned off for this site.',
-        'audio-capture': 'No microphone found.',
-        network: 'Voice input needs an internet connection.',
+        'service-not-allowed': ios
+          ? `Voice input is turned off on this iPhone. Turn on Settings → General → Keyboard → Enable Dictation${homeScreen ? ', or open nudge.grittaai.com in the Safari app (the home-screen app may not allow voice)' : ''}, then try again.`
+          : 'Voice input is turned off for this site or device. Check the browser’s microphone and voice settings.',
+        'audio-capture': 'No microphone was found, or another app is using it.',
+        network: 'Voice input needs an internet connection (speech is turned into text online).',
+        'language-not-supported': 'This device does not support voice input in Indian English.',
       }[ev.error];
-      showError(msg || 'Something went wrong with voice input.', ev.error !== 'service-not-allowed' && ev.error !== 'audio-capture');
+      showError(`${msg || 'Voice input stopped unexpectedly.'} (code: ${ev.error})`, ev.error !== 'audio-capture');
     };
     rec.onend = () => {
       // keep what this session heard (an unfinished phrase counts too), then keep listening until Done
@@ -704,6 +747,7 @@ function voiceSheet() {
       show();
       if (state !== 'listening') return;
       if (Date.now() - startedAt > VOICE_MAX_MS) { finish(); return; }
+      if (tapToResume) { pause(); return; }
       quickEnds = !sessionHeard && Date.now() - sessionStart < 1000 ? quickEnds + 1 : 0;
       if (quickEnds >= 5) { showError('The microphone keeps stopping. Check it, then try again.'); return; }
       startSession();
