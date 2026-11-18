@@ -185,26 +185,25 @@ describe('computeDigests: message format', () => {
   const NOW = new Date('2026-11-16T11:20:00.000Z'); // 4:50 PM IST
   const dueIn = (min: number, o: Partial<TaskRow> = {}) => task({ dueAt: new Date(NOW.getTime() + min * MIN).toISOString(), ...o });
 
-  it('single task, due soon: bold title, italic due line, footer, no link', () => {
+  it('single task, due soon: bold title, italic due line, nothing else', () => {
     const [d] = run(NOW, [dueIn(10)], { settings: settings({ appName: 'Nudge' }) });
-    expect(d!.message).toBe(`*Reminder: task due in 10 min* @${NUM}\n\n*Prepare deck*\n_Due in 10 min, at 5:00 PM_\n\n_Mark done or snooze in the Nudge app._`);
+    expect(d!.message).toBe(`*Reminder: task due in 10 min* @${NUM}\n\n*Prepare deck*\n_Due in 10 min, at 5:00 PM_`);
   });
 
   it('single task overdue', () => {
     const t = dueIn(-25, { firstAlertSentAt: 'x' });
     const [d] = computeDigests(NOW, [person()], new Map([[1, [t]]]), new Map([[1, { nextDigestAt: NOW.toISOString(), lastDigestAt: null }]]), settings());
-    expect(d!.message).toBe(`*Reminder: task overdue by 25 min* @${NUM}\n\n*Prepare deck*\n_Overdue by 25 min (was due 4:25 PM)_\n\n_Mark done or snooze in the Pushup Nudge app._`);
+    expect(d!.message).toBe(`*Reminder: task overdue by 25 min* @${NUM}\n\n*Prepare deck*\n_Overdue by 25 min (was due 4:25 PM)_`);
   });
 
-  it('several tasks: numbered bold titles, overdue first, footer with the app name', () => {
+  it('several tasks: numbered bold titles, overdue first, no closing line', () => {
     const a = dueIn(-25, { title: 'Send proposal', firstAlertSentAt: 'x' });
     const b = dueIn(5, { title: 'Call Ravi' });
     const [d] = run(NOW, [b, a], { settings: settings({ appName: 'Tasks' }) });
     expect(d!.message).toBe([
       `*Reminder: 2 pending tasks* @${NUM}`, '',
       '*1. Send proposal*', '_Overdue by 25 min (was due 4:25 PM)_', '',
-      '*2. Call Ravi*', '_Due in 5 min, at 4:55 PM_', '',
-      '_Mark done or snooze in the Tasks app._',
+      '*2. Call Ravi*', '_Due in 5 min, at 4:55 PM_',
     ].join('\n'));
   });
 

@@ -75,22 +75,20 @@ function dueLine(dueIso: string, now: Date): string {
 }
 
 /**
- * WhatsApp text: bold header, one bold title + italic due line per task, and a closing hint. No links, so WhatsApp
- * shows no preview card and the tasks stay the focus. `who` is "@number" in a group, empty in a DM.
+ * WhatsApp text, kept minimal for the internal team: bold header, then one bold title + italic due line per task.
+ * No links (so no preview card) and no closing hint. `who` is "@number" in a group, empty in a DM.
  */
-function buildMessage(tasks: TaskRow[], now: Date, who: string, appName: string): string {
+function buildMessage(tasks: TaskRow[], now: Date, who: string): string {
   const tag = who ? ` ${who}` : '';
-  const footer = `_Mark done or snooze in the ${appName} app._`;
   if (tasks.length === 1) {
     const t = tasks[0]!;
-    return [`*Reminder: task ${relativeDue(t.dueAt!, now)}*${tag}`, '', `*${oneLine(t.title)}*`, `_${dueLine(t.dueAt!, now)}_`, '', footer].join('\n');
+    return [`*Reminder: task ${relativeDue(t.dueAt!, now)}*${tag}`, '', `*${oneLine(t.title)}*`, `_${dueLine(t.dueAt!, now)}_`].join('\n');
   }
   const lines = [`*Reminder: ${tasks.length} pending tasks*${tag}`];
   tasks.slice(0, MAX_LISTED).forEach((t, i) => {
     lines.push('', `*${i + 1}. ${oneLine(t.title)}*`, `_${dueLine(t.dueAt!, now)}_`);
   });
   if (tasks.length > MAX_LISTED) lines.push('', `+ ${tasks.length - MAX_LISTED} more`);
-  lines.push('', footer);
   return lines.join('\n');
 }
 
@@ -170,7 +168,7 @@ export function computeDigests(
       taskIds: listed.map((t) => t.id),
       newTaskIds: listed.filter((t) => t.firstAlertSentAt === null).map((t) => t.id),
       target: resolved.target,
-      message: buildMessage(listed, now, resolved.who, settings.appName ?? 'Pushup Nudge'),
+      message: buildMessage(listed, now, resolved.who),
       repeatMinutes: es.repeatMinutes,
     });
   }
@@ -205,7 +203,7 @@ export function previewDigest(person: PersonRow, tasks: readonly TaskRow[], now:
     listed = tasks.filter((t) => t.status !== 'done' && t.deletedAt === null && t.dueAt !== null).sort(byDue);
   }
   if (listed.length === 0) return { ok: false, reason: 'no_tasks' };
-  return { ok: true, mode, target: resolved.target, message: buildMessage(listed, now, resolved.who, settings.appName ?? 'Pushup Nudge'), taskIds: listed.map((t) => t.id) };
+  return { ok: true, mode, target: resolved.target, message: buildMessage(listed, now, resolved.who), taskIds: listed.map((t) => t.id) };
 }
 
 // ---------- the job ----------
