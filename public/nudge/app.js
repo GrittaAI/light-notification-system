@@ -388,8 +388,17 @@ function setBackgroundInert(on) {
   if (shell) shell.inert = on;
 }
 /** `keepOpen`: for forms, a tap on the backdrop must not discard what was typed (Esc and the buttons still close). */
-function openSheet(content, { label, keepOpen }) {
-  if (closeSheet) closeSheet();
+/**
+ * Sheets and the Back button: opening a sheet adds one history entry (shared when one sheet replaces another), so the
+ * phone's Back closes the sheet instead of leaving the app. Closing it any other way removes that entry again.
+ */
+const isSheetEntry = () => !!(history.state && history.state.nudgeSheet);
+window.addEventListener('popstate', () => { if (closeSheet && !isSheetEntry()) closeSheet({ fromBack: true }); });
+if (isSheetEntry()) history.replaceState(null, ''); // a reload while a sheet was open: no sheet is open now
+
+function openSheet(content, { label, keepOpen, onClose }) {
+  if (closeSheet) closeSheet({ replacing: true });
+  if (!isSheetEntry()) history.pushState({ nudgeSheet: true }, '');
   const opener = document.activeElement;
   const panel = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': label }, h('div', { class: 'sheet-grip' }), content);
   const back = h('div', { class: 'backdrop' }, panel);
@@ -407,11 +416,16 @@ function openSheet(content, { label, keepOpen }) {
     else if (!ev.shiftKey && (!inside || document.activeElement === last)) { ev.preventDefault(); first.focus(); }
     return undefined;
   };
-  function close() {
+  function close(opts) {
+    if (closeSheet !== close) return; // already closed
     document.removeEventListener('keydown', onKey);
     back.remove();
     closeSheet = null;
     setBackgroundInert(false);
+    if (onClose) { try { onClose(); } catch { /* never block closing */ } }
+    const how = opts && typeof opts === 'object' && !('target' in opts) ? opts : {};
+    // closed by Cancel/Escape/backdrop: drop our history entry, unless another sheet took over or the app navigated
+    if (!how.fromBack && !how.replacing) setTimeout(() => { if (!closeSheet && isSheetEntry()) history.back(); }, 0);
     if (opener && opener.isConnected && opener !== document.body) {
       opener.focus();
       if (document.activeElement !== opener) requestAnimationFrame(() => opener.focus()); // style update after un-inert
@@ -663,7 +677,8 @@ function voiceSheet() {
   let quickEnds = 0; // sessions that ended at once without hearing anything (a broken mic must not loop forever)
   let sessionStart = 0;
   let sessionHeard = false;
-  const close = openSheet(content, { label: 'Say a task', keepOpen: true });
+  // Back (or any close) also stops the microphone and drops a pending result
+  const close = openSheet(content, { label: 'Say a task', keepOpen: true, onClose: () => { if (state !== 'closed') { state = 'closed'; stopRec(true); } } });
   const live = h('p', { class: 'voice-text', 'aria-live': 'polite' });
   const status = h('p', { class: 'voice-status' }, 'Listening… tap Done when you finish');
   const doneBtn = h('button', { type: 'button', class: 'btn', id: 'voice-done', onclick: () => finish() }, icon('check'), 'Done');
