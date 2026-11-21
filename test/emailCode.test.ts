@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { CODE_MAX_ATTEMPTS, CODE_TTL_MS, CODE_VERIFY_IP_LIMIT, MEMBER_SESSION_TTL_MS, SESSION_TTL_MS } from '../src/admin/auth.js';
+import { ADMIN_SESSION_TTL_MS, CODE_MAX_ATTEMPTS, CODE_TTL_MS, CODE_VERIFY_IP_LIMIT, MEMBER_SESSION_TTL_MS, SESSION_TTL_MS } from '../src/admin/auth.js';
 import { setupNudge, SUPER } from './helpers/nudge.js';
 
 beforeAll(() => { process.env.LOG_LEVEL = 'error'; });
@@ -35,7 +35,7 @@ describe('email code login', () => {
     expect((await t.request('POST', '/api/auth/email-code/verify', { body: { email: 'mem@example.com', code: mail.text } })).status).toBe(401);
   });
 
-  it('works for the superadmin (12 h session)', async () => {
+  it('works for the superadmin (3 h session)', async () => {
     const t = await setupNudge();
     await ask(t, SUPER);
     const v = await t.request('POST', '/api/auth/email-code/verify', { body: { email: SUPER, code: t.mails[0]!.text } });
@@ -212,25 +212,36 @@ describe('sessions', () => {
     expect((await t.request('GET', '/api/me', { cookie })).status).toBe(401);
   });
 
-  it('admins and the superadmin: 12 h, not sliding', async () => {
+  it('the superadmin: 3 h from login, even while in use', async () => {
+    const t = await setupNudge();
+    const sup = await t.loginSuper();
+    t.advance(SESSION_TTL_MS - 60_000);
+    expect((await t.request('GET', '/api/me', { cookie: sup })).status).toBe(200);
+    t.advance(2 * 60_000);
+    expect((await t.request('GET', '/api/me', { cookie: sup })).status).toBe(401);
+    expect(SESSION_TTL_MS).toBe(3 * 3600_000);
+  });
+
+  it('admins: 7 days, extended while used', async () => {
     const t = await setupNudge();
     t.person('adm@example.com', 'admin');
     const adm = await t.loginWithCode('adm@example.com');
-    const sup = await t.loginSuper();
-    t.advance(SESSION_TTL_MS - 60_000);
+    t.advance(6 * DAY);
+    const used = await t.request('GET', '/api/me', { cookie: adm });
+    expect(used.status).toBe(200);
+    expect(used.headers['set-cookie']![0]).toContain(`Max-Age=${ADMIN_SESSION_TTL_MS / 1000}`); // extended
+    t.advance(6 * DAY); // 12 days after login, 6 after the extension
     expect((await t.request('GET', '/api/me', { cookie: adm })).status).toBe(200);
-    expect((await t.request('GET', '/api/me', { cookie: sup })).status).toBe(200);
-    t.advance(2 * 60_000);
+    t.advance(7 * DAY + 1000); // unused for 7 days
     expect((await t.request('GET', '/api/me', { cookie: adm })).status).toBe(401);
-    expect((await t.request('GET', '/api/me', { cookie: sup })).status).toBe(401);
   });
 
-  it('a member promoted to admin loses the long session (12 h from login)', async () => {
+  it('a member promoted to admin drops to the 7-day admin limit', async () => {
     const t = await setupNudge();
     const p = t.person('mem@example.com');
     const cookie = await t.loginWithCode('mem@example.com');
     t.db.prepare(`UPDATE people SET role = 'admin' WHERE id = ?`).run(p.id);
-    t.advance(SESSION_TTL_MS + 1000);
+    t.advance(ADMIN_SESSION_TTL_MS + 1000);
     expect((await t.request('GET', '/api/me', { cookie })).status).toBe(401);
   });
 

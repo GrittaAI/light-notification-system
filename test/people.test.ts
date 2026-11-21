@@ -368,7 +368,7 @@ describe('reminders console vs Nudge', () => {
     const t = await setupNudge();
     const r = await t.request('POST', '/api/auth/password', { body: { email: SUPER, password: PASSWORD } });
     const c = r.headers['set-cookie']![0]!;
-    expect(c).toMatch(/^nudge_session=[\w-]{43}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=43200$/);
+    expect(c).toMatch(/^nudge_session=[\w-]{43}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=10800$/);
     expect(c).not.toMatch(/Domain=/i);
   });
 });

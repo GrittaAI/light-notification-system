@@ -14,9 +14,14 @@ export type Product = 'reminders' | 'tasks';
 /** Each product has its own host-only cookie and its own sessions: a session of one is never accepted by the other. */
 export const COOKIE_NAMES: Record<Product, string> = { reminders: 'admin_session', tasks: 'nudge_session' };
 export const COOKIE_NAME = COOKIE_NAMES.reminders;
-export const SESSION_TTL_MS = 12 * 3600_000;
+/** Superadmin (env email/password): short and fixed, because it can change everything. */
+export const SESSION_TTL_MS = 3 * 3600_000;
+export const SUPERADMIN_SESSION_TTL_MS = SESSION_TTL_MS;
+/** Admins: 7 days, extended while used. */
+export const ADMIN_SESSION_TTL_MS = 7 * 24 * 3600_000;
+/** Members: 30 days, extended while used. */
 export const MEMBER_SESSION_TTL_MS = 30 * 24 * 3600_000;
-/** Members' sessions are extended when used and more than this long after the last extension. */
+/** Admin and member sessions are extended when used and more than this long after the last extension. */
 export const SESSION_EXTEND_AFTER_MS = 24 * 3600_000;
 export const CODE_TTL_MS = 10 * 60_000;
 export const CODE_MAX_ATTEMPTS = 5;
@@ -136,8 +141,8 @@ export function createAuth(deps: AuthDeps) {
     verifyByIp.prune();
   }
 
-  const isSliding = (role: UserRole) => role === 'member';
-  const ttlFor = (role: UserRole) => (isSliding(role) ? MEMBER_SESSION_TTL_MS : SESSION_TTL_MS);
+  const isSliding = (role: UserRole) => role !== 'superadmin';
+  const ttlFor = (role: UserRole) => (role === 'member' ? MEMBER_SESSION_TTL_MS : role === 'admin' ? ADMIN_SESSION_TTL_MS : SUPERADMIN_SESSION_TTL_MS);
 
   function createSession(user: Principal): string {
     cleanup();
@@ -299,14 +304,16 @@ export function createAuth(deps: AuthDeps) {
     if (row.expires_at <= nowIso) return drop();
     const user = principal(row.email);
     if (!user) return drop();
-    // A member promoted to admin since login: the 12 h admin limit applies from login time.
-    if (row.sliding === 1 && !isSliding(user.role) && new Date(Date.parse(row.created_at) + SESSION_TTL_MS).toISOString() <= nowIso) return drop();
+    // The superadmin's limit always counts from login (this also cuts older, longer sessions down to it).
+    if (user.role === 'superadmin' && new Date(Date.parse(row.created_at) + SUPERADMIN_SESSION_TTL_MS).toISOString() <= nowIso) return drop();
     if (row.sliding === 1 && isSliding(user.role)) {
       const last = Date.parse(row.extended_at ?? row.created_at);
+      // the limit follows the CURRENT role (a member promoted to admin drops from 30 to 7 days)
+      if (last + ttlFor(user.role) <= now().getTime()) return drop();
       if (now().getTime() - last > SESSION_EXTEND_AFTER_MS) {
         db.prepare(`UPDATE admin_sessions SET expires_at = ?, extended_at = ? WHERE token_hash = ?`)
-          .run(new Date(now().getTime() + MEMBER_SESSION_TTL_MS).toISOString(), nowIso, hash);
-        return { ...user, refreshedCookie: cookieFor(token, 'member') };
+          .run(new Date(now().getTime() + ttlFor(user.role)).toISOString(), nowIso, hash);
+        return { ...user, refreshedCookie: cookieFor(token, user.role) };
       }
     }
     return user;

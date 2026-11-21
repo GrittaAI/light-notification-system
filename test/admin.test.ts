@@ -80,7 +80,7 @@ describe('password login', () => {
     expect(r.status).toBe(200);
     expect(r.json).toEqual({ email: SUPER, role: 'superadmin' });
     const cookie = r.headers['set-cookie']![0]!;
-    expect(cookie).toMatch(/^admin_session=[\w-]{43}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=43200$/);
+    expect(cookie).toMatch(/^admin_session=[\w-]{43}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=10800$/);
     // Only the hash is stored.
     const token = cookie.split(';')[0]!.split('=')[1]!;
     const rows = t.db.prepare(`SELECT token_hash FROM admin_sessions`).all() as { token_hash: string }[];
@@ -135,7 +135,7 @@ describe('google login', () => {
 });
 
 describe('sessions', () => {
-  it('requires a session, expires after 12 h, and logout deletes it', async () => {
+  it('requires a session, expires after 3 h (superadmin), and logout deletes it', async () => {
     const t = await setup();
     expect((await t.request('GET', '/api/closers')).status).toBe(401);
     const cookie = await t.login();
