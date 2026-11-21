@@ -387,9 +387,9 @@ export function toastReplaces(newKind, existingKind) {
 // ---------- local edits (optimistic) ----------
 
 /** A new local task (version 0 = not on the server yet). */
-export function newTask({ id, ownerPersonId, title, dueAt = null, priority = 'medium', createdBy = '' }, nowIso) {
+export function newTask({ id, ownerPersonId, title, dueAt = null, priority = 'medium', notes = '', createdBy = '' }, nowIso) {
   return {
-    id, ownerPersonId, title, notes: '', status: 'todo', priority, dueAt, checklist: [], snoozedUntil: null,
+    id, ownerPersonId, title, notes: String(notes || '').slice(0, 10_000), status: 'todo', priority, dueAt, checklist: [], snoozedUntil: null,
     completedAt: null, lastNotifiedAt: null, createdBy, createdAt: nowIso, updatedAt: nowIso, version: 0, deleted: false,
   };
 }

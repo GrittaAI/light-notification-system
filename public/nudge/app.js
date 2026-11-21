@@ -12,6 +12,20 @@ import {
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const $app = document.getElementById('app');
+// ---------- loading veil ----------
+const $splash = document.getElementById('splash');
+const splashStart = performance.now();
+let splashGone = false;
+const splashProgress = (pct) => { if ($splash && !splashGone) $splash.style.setProperty('--p', `${pct}%`); };
+/** Lifts the veil once the first screen is drawn; shown at least ~0.7 s so it never just flickers. */
+function hideSplash() {
+  if (!$splash || splashGone) return;
+  splashProgress(100);
+  splashGone = true;
+  const wait = Math.max(0, 700 - (performance.now() - splashStart)) + 200;
+  setTimeout(() => { $splash.classList.add('done'); setTimeout(() => $splash.remove(), 900); }, wait);
+}
+setTimeout(hideSplash, 10_000); // never trap anyone behind it
 const $toasts = document.getElementById('toasts');
 const $alerts = document.getElementById('alerts');
 const $sheetRoot = document.getElementById('sheet-root');
@@ -41,12 +55,29 @@ const clear = (node) => { while (node.firstChild) node.removeChild(node.firstChi
 /** Replaces node's children; flattens arrays and skips null/false (native append would print them). */
 const fill = (node, ...kids) => { clear(node).append(...kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false)); return node; };
 
+/**
+ * Icons point into the sprite. Once the sprite is inlined in the page (loadIconSprite), a new icon renders at once;
+ * an external '/icons.svg#x' reference would blank out on every re-render while the file is resolved.
+ */
+let iconBase = '/icons.svg';
+async function loadIconSprite() {
+  try {
+    const text = await (await fetch('/icons.svg')).text(); // from the service worker cache when installed
+    const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+    if (doc.querySelector('parsererror') || doc.documentElement.nodeName !== 'svg') return;
+    const sprite = document.importNode(doc.documentElement, true);
+    sprite.setAttribute('class', 'icon-sprite');
+    sprite.setAttribute('aria-hidden', 'true');
+    document.body.prepend(sprite);
+    iconBase = '';
+  } catch { /* keep the external reference */ }
+}
 function icon(name, cls) {
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('class', 'icon' + (cls ? ' ' + cls : ''));
   svg.setAttribute('aria-hidden', 'true');
   const use = document.createElementNS(SVG_NS, 'use');
-  use.setAttribute('href', '/icons.svg#' + name);
+  use.setAttribute('href', iconBase + '#' + name);
   svg.append(use);
   return svg;
 }
@@ -100,7 +131,7 @@ function toast(text, opts = {}) {
 // ---------- API ----------
 async function rawFetch(method, path, body) {
   const res = await fetch(path, {
-    method, credentials: 'same-origin',
+    method, credentials: 'same-origin', signal: AbortSignal.timeout(20_000),
     headers: body !== undefined || method !== 'GET' ? { 'Content-Type': 'application/json' } : {},
     body: body !== undefined ? JSON.stringify(body) : method !== 'GET' ? '{}' : undefined,
   });
@@ -164,22 +195,25 @@ function selectOwner(id) {
 }
 
 // ---------- local writes (instant, then outbox) ----------
-function mutate(task, op) {
+function mutate(task, op, opts = {}) {
   if (!S.active) return;
   S.tasks.set(task.id, task);
   persist({ tasks: { put: [task] }, ...setOutbox(enqueue(S.outbox, { taskId: task.id, ...op })) });
-  afterLocalWrite(task.id);
+  afterLocalWrite(task.id, opts);
 }
-function afterLocalWrite(taskId) {
+let listTimer = null;
+/** `list`: 'now' (default), 'soon' (typing a title: once the typing pauses) or 'none' (notes: not shown in the list). */
+function afterLocalWrite(taskId, { list = 'now' } = {}) {
   renderStatus();
-  renderHomeList();
-  renderDrawerCounts();
+  clearTimeout(listTimer);
+  if (list === 'now') { renderHomeList(); renderDrawerCounts(); }
+  else if (list === 'soon') listTimer = setTimeout(() => { renderHomeList(); renderDrawerCounts(); }, 400);
   updateTaskPageState(taskId);
   scheduleSync();
 }
-function createTask({ title, dueAt, priority }) {
+function createTask({ title, dueAt, priority, notes }) {
   if (!S.active) return undefined;
-  const t = newTask({ id: crypto.randomUUID(), ownerPersonId: S.ownerId, title, dueAt, priority, createdBy: S.me.email }, nowIso());
+  const t = newTask({ id: crypto.randomUUID(), ownerPersonId: S.ownerId, title, dueAt, priority, notes, createdBy: S.me.email }, nowIso());
   mutate(t, { kind: 'put', body: putBody(t), baseVersion: null, isCreate: true });
   return t;
 }
@@ -188,7 +222,9 @@ function editTask(id, patch) {
   const t = S.tasks.get(id);
   if (!t || !canEditOwner(t.ownerPersonId)) return;
   const nt = { ...t, ...patch, updatedAt: nowIso() };
-  mutate(nt, { kind: 'put', body: putBody(nt), baseVersion: t.version || null, isCreate: t.version === 0 });
+  const keys = Object.keys(patch);
+  const list = keys.every((k) => k === 'notes') ? 'none' : keys.every((k) => k === 'notes' || k === 'title') ? 'soon' : 'now';
+  mutate(nt, { kind: 'put', body: putBody(nt), baseVersion: t.version || null, isCreate: t.version === 0 }, { list });
 }
 function actOn(id, action, minutes) {
   if (!S.active) return;
@@ -516,6 +552,8 @@ function newTaskSheet(opts) {
   const close = openSheet(content, { label: 'New task', keepOpen: true });
   const title = h('textarea', { class: 'title-input', id: 'nt-title', rows: '1', maxlength: '200', placeholder: 'What needs doing?', 'aria-label': 'Task title', 'data-autofocus': !voice });
   if (opts.title) title.value = String(opts.title).slice(0, 200);
+  const notesIn = h('textarea', { class: 'textarea nt-notes', id: 'nt-notes', rows: '2', maxlength: '10000', placeholder: 'Add notes (optional)', 'aria-label': 'Notes' });
+  notesIn.addEventListener('input', () => autoRows(notesIn, 8));
   const dueRow = h('div', { class: 'chip-row', role: 'group', 'aria-label': 'Due date' });
   const prioRow = h('div', { class: 'chip-row', role: 'radiogroup', 'aria-label': 'Priority' });
   const addBtn = h('button', { type: 'button', class: 'btn', id: 'nt-add' }, 'Add task');
@@ -543,7 +581,7 @@ function newTaskSheet(opts) {
   const submit = () => {
     const text = title.value.trim();
     if (!text) return;
-    createTask({ title: text, dueAt: st.due ? st.due.iso : null, priority: st.priority });
+    createTask({ title: text, dueAt: st.due ? st.due.iso : null, priority: st.priority, notes: notesIn.value.trim() });
     close();
     toast(st.due ? `Task added · due ${fmtDateTime(Date.parse(st.due.iso), nowMs())}` : 'Task added');
   };
@@ -558,6 +596,7 @@ function newTaskSheet(opts) {
       pastWarn && h('div', { class: 'callout warn', role: 'alert' }, icon('alert-triangle'), h('span', {}, 'That time has already passed. Pick another time below.')),
       voice && !st.due && h('div', { class: 'callout info' }, icon('calendar'), h('span', {}, voice.source === 'fallback' ? 'I could not work out a date. Pick one below, or leave it without a date.' : 'No date was said. Pick one below, or leave it without a date.')),
       title,
+      notesIn,
       h('div', { class: 'stack' }, h('span', { class: 'field-label' }, 'Due'), dueRow, inlinePick),
       h('div', { class: 'stack' }, h('span', { class: 'field-label' }, 'Priority'), prioRow)),
     h('div', { class: 'sheet-actions' }, h('button', { type: 'button', class: 'btn text', onclick: close }, 'Cancel'), addBtn));
@@ -1071,6 +1110,9 @@ function renderStatus() {
   const offline = !S.online;
   const text = offline ? (n ? `Offline, ${n} change${n > 1 ? 's' : ''} waiting to sync` : 'Offline')
     : S.syncing ? 'Syncing' : n ? `${n} change${n > 1 ? 's' : ''} waiting to sync` : 'All changes saved';
+  const key = `${text}|${offline}|${S.syncing}|${n}`;
+  if (view.status.dataset.key === key) return;
+  view.status.dataset.key = key;
   view.status.setAttribute('aria-label', `${text}. Sync now`);
   view.status.title = text;
   clear(view.status).append(icon(offline ? 'cloud-off' : S.syncing ? 'refresh-cw' : 'cloud'), h('span', { class: 'status-dot ' + (offline ? 'off' : n || S.syncing ? 'wait' : 'on') }));
@@ -1249,9 +1291,18 @@ function section(key, title, tasks, cls, collapsible) {
   return h('section', { 'aria-label': title }, head, open && h('ul', { class: 'list' }, tasks.map((t) => taskRow(t))));
 }
 
+function homeListKey() {
+  const rows = ownerTasks().map((t) => [t.id, t.title, t.status, t.priority, t.dueAt, t.snoozedUntil, t.completedAt,
+    (t.checklist || []).map((c) => (c.done ? 1 : 0)).join('')].join('\u0001'));
+  return JSON.stringify([rows, S.ownerId, S.showDone, S.homeView, S.cal, S.loaded, S.online, S.me && S.me.personId,
+    route().name === 'task' ? route().id : null, Math.floor(nowMs() / 60_000), canEditOwner(S.ownerId)]);
+}
 function renderHomeList() {
   const box = document.getElementById('home-list');
   if (!box || !S.me) return;
+  const key = homeListKey();
+  if (box.dataset.key === key) return; // nothing visible changed (e.g. notes typed, or a sync that changed nothing shown)
+  box.dataset.key = key;
   clear(box);
   if (!S.loaded && S.tasks.size === 0 && S.online) {
     box.append(h('div', { 'aria-hidden': 'true' }, h('div', { class: 'skeleton' }), h('div', { class: 'skeleton' }), h('div', { class: 'skeleton' })));
@@ -1425,6 +1476,10 @@ function renderTask(id) {
   notes.value = t.notes;
   notes.addEventListener('input', () => editTask(id, { notes: notes.value }));
   refs.notes = notes;
+  // the history timeline waits while you type; catch it up when you leave the field
+  const catchUp = () => setTimeout(() => refreshTaskPage(id), 0);
+  notes.addEventListener('blur', catchUp);
+  title.addEventListener('blur', catchUp);
 
   refs.checklist = h('div', {});
   refs.clAdd = h('input', { type: 'text', maxlength: '300', placeholder: 'Add a step', 'aria-label': 'New checklist item', disabled: !editable,
@@ -1538,16 +1593,22 @@ function refreshTaskPage(id, force) {
     refs.dueVal.classList.toggle('overdue', ms < now && t.status !== 'done');
   } else { refs.dueVal.textContent = 'No due date · no nudges'; refs.dueVal.classList.remove('overdue'); }
   refs.prioVal.textContent = cap(t.priority);
-  clear(refs.prioIcon).append(icon('flag', `p-${t.priority}-c`));
+  if (refs.prioIcon.dataset.p !== t.priority) { refs.prioIcon.dataset.p = t.priority; clear(refs.prioIcon).append(icon('flag', `p-${t.priority}-c`)); }
   const snoozed = isSnoozed(t, now);
   refs.snoozeVal.textContent = snoozed ? `Until ${fmtDateTime(Date.parse(t.snoozedUntil), now)}` : t.status === 'done' ? 'Completed' : 'Not snoozed';
   refs.snoozeBtn.hidden = t.status === 'done';
-  clear(refs.doneBtn).append(icon(t.status === 'done' ? 'rotate-ccw' : 'circle-check-big'), t.status === 'done' ? 'Reopen' : 'Mark as done');
-  refs.doneBtn.className = 'btn big' + (t.status === 'done' ? ' tonal' : '');
-  if (force || !refs.checklist.contains(focused)) renderChecklist(id, refs);
+  const doneKey = t.status === 'done' ? 'done' : 'open';
+  if (refs.doneBtn.dataset.s !== doneKey) {
+    refs.doneBtn.dataset.s = doneKey;
+    clear(refs.doneBtn).append(icon(t.status === 'done' ? 'rotate-ccw' : 'circle-check-big'), t.status === 'done' ? 'Reopen' : 'Mark as done');
+    refs.doneBtn.className = 'btn big' + (t.status === 'done' ? ' tonal' : '');
+  }
+  const clKey = JSON.stringify(t.checklist || []) + '|' + canEditOwner(t.ownerPersonId);
+  if (force || (refs.clKey !== clKey && !refs.checklist.contains(focused))) { refs.clKey = clKey; renderChecklist(id, refs); }
   updateTaskPageState(id);
-  // the timeline follows the server version: reload it when a sync brought a newer one
-  if (!force && S.online && !pendingFor(id) && t.version > 0 && taskPage.activityVersion !== t.version) loadActivity(id, refs);
+  // the timeline follows the server version: reload it when a sync brought a newer one, but not while typing
+  const typing = focused === refs.title || focused === refs.notes;
+  if (!force && !typing && S.online && !pendingFor(id) && t.version > 0 && taskPage.activityVersion !== t.version) loadActivity(id, refs);
 }
 
 function updateTaskPageState(id) {
@@ -1556,6 +1617,8 @@ function updateTaskPageState(id) {
   const el = taskPage.refs.save;
   el.className = 'save-state' + (pending ? ' pending' : '');
   const text = !S.online ? (pending ? 'Offline · will sync' : 'Offline') : pending || S.syncing ? 'Saving…' : 'Saved';
+  if (el.dataset.key === text) return;
+  el.dataset.key = text;
   clear(el).append(icon(!S.online ? 'cloud-off' : pending || S.syncing ? 'refresh-cw' : 'cloud', 'xs'), text);
 }
 
@@ -1615,9 +1678,18 @@ function registerWorker() {
   let reloading = false;
   const hadController = !!navigator.serviceWorker.controller; // first install claims the page: that must not reload it
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloading) { reloading = true; location.reload(); } });
-  const offer = (worker) => toast('A new version of Pushup Nudge is ready', {
-    timeout: 0, action: { label: 'Refresh', fn: () => worker.postMessage({ type: 'SKIP_WAITING' }) },
-  });
+  // A new version applies itself: right away when nothing is being edited, otherwise as soon as the app goes to the
+  // background. Unsynced changes are safe: they live in the on-device outbox and sync after the reload.
+  const busy = () => !!closeSheet || /^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || '');
+  let offered = false;
+  const offer = (worker) => {
+    if (offered) return;
+    offered = true;
+    const apply = () => worker.postMessage({ type: 'SKIP_WAITING' });
+    if (!busy()) { apply(); return; }
+    toast('A new version of Pushup Nudge is ready', { timeout: 0, action: { label: 'Refresh', fn: apply } });
+    document.addEventListener('visibilitychange', () => { if (document.hidden) apply(); });
+  };
   navigator.serviceWorker.register('/sw.js').then((reg) => {
     if (reg.waiting && navigator.serviceWorker.controller) offer(reg.waiting);
     reg.addEventListener('updatefound', () => {
@@ -1626,6 +1698,7 @@ function registerWorker() {
       w.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) offer(w); });
     });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+    setInterval(() => { if (!document.hidden) reg.update().catch(() => {}); }, 30 * 60_000); // also while left open
   }).catch(() => {});
 }
 
@@ -1678,7 +1751,10 @@ function trackKeyboard() {
 
 // ---------- boot ----------
 async function boot() {
-  if (!(await claimActive())) { goInactive(); return; }
+  splashProgress(25);
+  await spriteReady;
+  splashProgress(40);
+  if (!(await claimActive())) { goInactive(); hideSplash(); return; }
   let cachedMe;
   try {
     S.tasks = new Map((await idb.getAll('tasks')).map((t) => [t.id, t]));
@@ -1686,18 +1762,32 @@ async function boot() {
     S.outbox = (await idb.getAll('outbox')).sort((a, b) => a.seq - b.seq);
     for (const k of ['lastSync', 'me', 'nudgeTarget']) { const v = await idb.getMeta(k); if (v !== undefined) S.meta[k] = v; }
     cachedMe = S.meta.me;
+    splashProgress(70);
   } catch {
     S.storageOk = false;
     toast('Offline storage is unavailable; changes will not survive a reload.', { kind: 'error' });
+  }
+  if (cachedMe) {
+    // offline-first: open straight from the device, then confirm the session with the server in the background
+    await startApp(cachedMe);
+    api('GET', '/api/me').then(async (fresh) => {
+      if (fresh.email !== cachedMe.email) { await wipeLocal(); location.reload(); return; } // someone else signed in here
+      if (JSON.stringify(fresh) !== JSON.stringify(S.me)) { S.me = fresh; S.meta.me = fresh; persist({ meta: { me: fresh } }); view.shellKey = null; renderAll(false); }
+    }).catch((e) => { if (e.status === 401) signedOut('Your session has ended. Please sign in again.'); }); // offline: carry on
+    return;
   }
   let me;
   try {
     me = await api('GET', '/api/me');
   } catch (e) {
-    if (e.network && cachedMe) me = cachedMe; // offline: open with the cached profile
-    else if (e.status === 401 || e.network) { renderSignIn(e.network ? 'You are offline. Connect to the internet to sign in.' : undefined); return; }
-    else throw e;
+    if (e.status === 401 || e.network) { renderSignIn(e.network ? 'You are offline. Connect to the internet to sign in.' : undefined); hideSplash(); return; }
+    throw e;
   }
+  await startApp(me);
+}
+
+async function startApp(me) {
+  const cachedMe = S.meta.me;
   if (cachedMe && cachedMe.email !== me.email) {
     // a different person signed in: nothing of the previous user's data (or unsent edits) may carry over
     await wipeLocal();
@@ -1709,13 +1799,17 @@ async function boot() {
   S.loaded = S.meta.lastSync !== undefined;
   chooseOwner();
   view.app = null;
+  splashProgress(90);
   renderAll(false);
+  hideSplash();
   startSyncLoop();
 }
 
+const spriteReady = loadIconSprite();
 registerWorker();
 trackKeyboard();
 boot().catch((e) => {
   console.error('boot failed', e);
   clear($app).append(h('p', { class: 'boot' }, 'Something went wrong starting Nudge. Reload to try again.'));
+  hideSplash();
 });

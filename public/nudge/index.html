@@ -18,7 +18,21 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <div id="app"><p class="boot">Loading Pushup Nudge…</p></div>
+  <!-- Loading veil (Pushup style): shown until the app has drawn its first screen, then lifts. -->
+  <div id="splash" role="status" aria-live="polite" aria-label="Loading Pushup Nudge">
+    <div class="sp-inner">
+      <div class="sp-logo" aria-hidden="true">
+        <svg class="sp-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.268 21a2 2 0 0 0 3.464 0"/>
+          <path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/>
+        </svg>
+      </div>
+      <div class="sp-mark">PUSHUP NUDGE</div>
+      <div class="sp-by">by Gritta AI</div>
+      <b class="sp-bar"><i></i></b>
+    </div>
+  </div>
+  <div id="app"></div>
   <div id="sheet-root"></div>
   <div class="toast-stack">
     <div id="alerts" class="toasts" role="alert"></div>

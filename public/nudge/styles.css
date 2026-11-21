@@ -573,3 +573,40 @@ button.setting, label.setting { width: 100%; text-align: left; cursor: pointer; 
 .voice-heard span { overflow-wrap: anywhere; font-style: italic; }
 /* phones: room for the mic + New task buttons */
 @media (max-width: 839px) { .content:not(.page) { padding-bottom: calc(160px + env(safe-area-inset-bottom)); } .cal-end { height: 24px; } }
+
+/* inlined icon sprite (symbols only, never shown) */
+.icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.nt-notes { min-height: 64px; resize: none; }
+
+/* ---------- loading veil (Pushup style) ---------- */
+#splash {
+  --p: 12%;
+  position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; overflow: hidden;
+  background: var(--surface); transition: opacity .8s ease, transform .8s ease; will-change: opacity;
+}
+#splash::before {
+  content: ''; position: absolute; width: 62vmax; height: 62vmax; border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--primary) 20%, transparent), transparent 62%);
+  animation: spGlow 3.4s ease-in-out infinite;
+}
+#splash .sp-inner { position: relative; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 0 24px; animation: spRise 1s cubic-bezier(.2, .7, .2, 1) both; }
+#splash .sp-logo {
+  display: grid; place-items: center; width: 76px; height: 76px; margin-bottom: 10px; border-radius: 22px;
+  background: #ea580c; color: #fff; box-shadow: 0 12px 40px color-mix(in srgb, #ea580c 45%, transparent);
+}
+#splash .sp-bell { width: 40px; height: 40px; transform-origin: 50% 8%; animation: spRing 2.4s ease-in-out .6s infinite; }
+#splash .sp-mark {
+  font-size: clamp(26px, 7vw, 50px); font-weight: 800; letter-spacing: .16em; text-indent: .16em; text-align: center; line-height: 1.1;
+  color: var(--on-surface); text-shadow: 0 0 36px color-mix(in srgb, var(--primary) 42%, transparent);
+}
+#splash .sp-by { font-size: 12px; font-weight: 600; letter-spacing: .34em; text-indent: .34em; text-transform: uppercase; color: var(--on-surface-variant); }
+#splash .sp-bar { margin-top: 14px; display: block; width: 200px; height: 2px; border-radius: 2px; background: color-mix(in srgb, var(--on-surface) 14%, transparent); overflow: hidden; }
+#splash .sp-bar i { display: block; height: 100%; width: var(--p); background: var(--primary); box-shadow: 0 0 10px color-mix(in srgb, var(--primary) 70%, transparent); transition: width .45s ease; }
+#splash.done { opacity: 0; transform: scale(1.03); pointer-events: none; }
+@keyframes spRise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+@keyframes spGlow { 0%, 100% { opacity: .55; transform: scale(1); } 50% { opacity: 1; transform: scale(1.09); } }
+@keyframes spRing { 0%, 60%, 100% { transform: rotate(0); } 8% { transform: rotate(14deg); } 16% { transform: rotate(-12deg); } 24% { transform: rotate(9deg); } 32% { transform: rotate(-6deg); } 40% { transform: rotate(3deg); } }
+@media (prefers-reduced-motion: reduce) { #splash .sp-inner, #splash::before, #splash .sp-bell { animation: none; } }
+/* safety net without JavaScript: the veil lifts by itself after 12 s */
+#splash { animation: spAutoHide .6s ease 12s forwards; }
+@keyframes spAutoHide { to { opacity: 0; visibility: hidden; } }
